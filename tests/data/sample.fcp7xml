@@ -1,0 +1,217 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<xmeml version="4">
+  <sequence id="rve-sequence">
+    <name>fixture-0001</name>
+    <duration>370</duration>
+    <rate>
+      <timebase>30</timebase>
+      <ntsc>FALSE</ntsc>
+    </rate>
+    <media>
+      <video>
+        <track>
+          <clipitem id="clipitem-0">
+            <name>shot_0</name>
+            <duration>69</duration>
+            <rate>
+              <timebase>30</timebase>
+              <ntsc>FALSE</ntsc>
+            </rate>
+            <start>0</start>
+            <end>69</end>
+            <in>0</in>
+            <out>69</out>
+            <file id="file-1">
+              <name>sample.mp4</name>
+              <pathurl>file://localhost/C:/Users/biren/Documents/Trae-CN/temp_20261019_05/fixtures/sample.mp4</pathurl>
+              <rate>
+                <timebase>30</timebase>
+                <ntsc>FALSE</ntsc>
+              </rate>
+            </file>
+          </clipitem>
+          <transitionitem>
+            <name>Cross Dissolve</name>
+            <duration>12</duration>
+            <start>0</start>
+            <end>12</end>
+            <effect>
+              <name>Cross Dissolve</name>
+              <effectid>Cross Dissolve</effectid>
+              <effectcategory>Dissolve</effectcategory>
+              <effecttype>transition</effecttype>
+              <mediatype>video</mediatype>
+              <wipecode>0</wipecode>
+              <wipeaccuracy>100</wipeaccuracy>
+              <startratio>0</startratio>
+              <endratio>1</endratio>
+              <reverse>FALSE</reverse>
+            </effect>
+          </transitionitem>
+          <clipitem id="clipitem-1">
+            <name>shot_1</name>
+            <duration>82</duration>
+            <rate>
+              <timebase>30</timebase>
+              <ntsc>FALSE</ntsc>
+            </rate>
+            <start>0</start>
+            <end>82</end>
+            <in>69</in>
+            <out>151</out>
+            <file id="file-1">
+              <name>sample.mp4</name>
+              <pathurl>file://localhost/C:/Users/biren/Documents/Trae-CN/temp_20261019_05/fixtures/sample.mp4</pathurl>
+              <rate>
+                <timebase>30</timebase>
+                <ntsc>FALSE</ntsc>
+              </rate>
+            </file>
+          </clipitem>
+          <clipitem id="clipitem-2">
+            <name>shot_2</name>
+            <duration>29</duration>
+            <rate>
+              <timebase>30</timebase>
+              <ntsc>FALSE</ntsc>
+            </rate>
+            <start>0</start>
+            <end>29</end>
+            <in>151</in>
+            <out>180</out>
+            <file id="file-1">
+              <name>sample.mp4</name>
+              <pathurl>file://localhost/C:/Users/biren/Documents/Trae-CN/temp_20261019_05/fixtures/sample.mp4</pathurl>
+              <rate>
+                <timebase>30</timebase>
+                <ntsc>FALSE</ntsc>
+              </rate>
+            </file>
+          </clipitem>
+          <clipitem id="clipitem-3">
+            <name>shot_3</name>
+            <duration>102</duration>
+            <rate>
+              <timebase>30</timebase>
+              <ntsc>FALSE</ntsc>
+            </rate>
+            <start>0</start>
+            <end>102</end>
+            <in>180</in>
+            <out>282</out>
+            <file id="file-1">
+              <name>sample.mp4</name>
+              <pathurl>file://localhost/C:/Users/biren/Documents/Trae-CN/temp_20261019_05/fixtures/sample.mp4</pathurl>
+              <rate>
+                <timebase>30</timebase>
+                <ntsc>FALSE</ntsc>
+              </rate>
+            </file>
+          </clipitem>
+          <transitionitem>
+            <name>Fade</name>
+            <duration>18</duration>
+            <start>0</start>
+            <end>18</end>
+            <effect>
+              <name>Fade</name>
+              <effectid>Fade</effectid>
+              <effectcategory>Dissolve</effectcategory>
+              <effecttype>transition</effecttype>
+              <mediatype>video</mediatype>
+              <wipecode>0</wipecode>
+              <wipeaccuracy>100</wipeaccuracy>
+              <startratio>0</startratio>
+              <endratio>1</endratio>
+              <reverse>FALSE</reverse>
+            </effect>
+          </transitionitem>
+          <clipitem id="clipitem-4">
+            <name>shot_4</name>
+            <duration>88</duration>
+            <rate>
+              <timebase>30</timebase>
+              <ntsc>FALSE</ntsc>
+            </rate>
+            <start>0</start>
+            <end>88</end>
+            <in>282</in>
+            <out>370</out>
+            <file id="file-1">
+              <name>sample.mp4</name>
+              <pathurl>file://localhost/C:/Users/biren/Documents/Trae-CN/temp_20261019_05/fixtures/sample.mp4</pathurl>
+              <rate>
+                <timebase>30</timebase>
+                <ntsc>FALSE</ntsc>
+              </rate>
+            </file>
+          </clipitem>
+        </track>
+      </video>
+      <audio>
+        <track>
+          <clipitem id="clipitem-0">
+            <name>shot_0</name>
+            <duration>69</duration>
+            <rate>
+              <timebase>30</timebase>
+              <ntsc>FALSE</ntsc>
+            </rate>
+            <start>0</start>
+            <end>69</end>
+            <in>0</in>
+            <out>69</out>
+          </clipitem>
+          <clipitem id="clipitem-1">
+            <name>shot_1</name>
+            <duration>82</duration>
+            <rate>
+              <timebase>30</timebase>
+              <ntsc>FALSE</ntsc>
+            </rate>
+            <start>0</start>
+            <end>82</end>
+            <in>69</in>
+            <out>151</out>
+          </clipitem>
+          <clipitem id="clipitem-2">
+            <name>shot_2</name>
+            <duration>29</duration>
+            <rate>
+              <timebase>30</timebase>
+              <ntsc>FALSE</ntsc>
+            </rate>
+            <start>0</start>
+            <end>29</end>
+            <in>151</in>
+            <out>180</out>
+          </clipitem>
+          <clipitem id="clipitem-3">
+            <name>shot_3</name>
+            <duration>102</duration>
+            <rate>
+              <timebase>30</timebase>
+              <ntsc>FALSE</ntsc>
+            </rate>
+            <start>0</start>
+            <end>102</end>
+            <in>180</in>
+            <out>282</out>
+          </clipitem>
+          <clipitem id="clipitem-4">
+            <name>shot_4</name>
+            <duration>88</duration>
+            <rate>
+              <timebase>30</timebase>
+              <ntsc>FALSE</ntsc>
+            </rate>
+            <start>0</start>
+            <end>88</end>
+            <in>282</in>
+            <out>370</out>
+          </clipitem>
+        </track>
+      </audio>
+    </media>
+  </sequence>
+</xmeml>

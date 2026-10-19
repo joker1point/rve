@@ -1,0 +1,301 @@
+"""RVE 命令行入口（argparse 实现）。
+
+设计要点：
+- 与 MCP 工具面共用同一套 pipeline 能力，一条命令装好后既能被 Agent 调用、也能手跑。
+- pipeline/workspace 兄弟模块全部延迟导入：本模块必须始终可 import，
+  `rve doctor` 即使依赖全缺也要正常退出（退出码 0，只报告结果）。
+- 报错不吞：NotImplementedError -> 退出码 2（人话提示）；其他异常 -> 退出码 1。
+  绝不 quietly succeed —— 失败必须可见。
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import inspect
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+# 未实现能力（Phase 2 待补）时的提示语
+_NOT_IMPLEMENTED_HINT = "该能力尚未实现（Phase 2）"
+
+
+# --------------------------------------------------------------------------- #
+# doctor
+# --------------------------------------------------------------------------- #
+
+
+def _probe_command(cmd: str) -> str | None:
+    """探测外部命令是否可用；可用时返回其版本行，否则返回 None。"""
+    exe = shutil.which(cmd)
+    if not exe:
+        return None
+    try:
+        proc = subprocess.run(
+            [exe, "-version"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except Exception:  # noqa: BLE001 — 自检环节任何异常都只算"不可用"
+        return None
+    if proc.returncode != 0:
+        return None
+    text = (proc.stdout or proc.stderr or "").strip().splitlines()
+    return text[0] if text else "(版本未知)"
+
+
+def _probe_import(module: str) -> tuple[bool, str]:
+    """尝试 import 一个模块；返回 (是否可用, 附加说明)。"""
+    try:
+        mod = __import__(module)
+    except Exception as exc:  # noqa: BLE001 — 自检环节任何异常都只算"不可用"
+        return False, f"{type(exc).__name__}: {exc}"
+    version = getattr(mod, "__version__", "")
+    return True, str(version) if version else "已就绪"
+
+
+def _workspaces_root() -> Path:
+    """spec 工作区根目录：优先环境变量 RVE_WORKSPACES，缺省 ~/.rve/workspaces。"""
+    env = os.environ.get("RVE_WORKSPACES")
+    if env:
+        return Path(env).expanduser()
+    return Path.home() / ".rve" / "workspaces"
+
+
+def _cmd_doctor(_args: argparse.Namespace) -> int:
+    """探测并打印本地环境：外部命令 / Python 依赖 / 工作区根目录。
+
+    无论探测结果如何都以退出码 0 正常结束（doctor 是"体检报告"，不是"断言"）。
+    """
+    print("RVE doctor —— 本地环境自检")
+    print("-" * 60)
+
+    root = _workspaces_root()
+    origin = "环境变量 RVE_WORKSPACES" if os.environ.get("RVE_WORKSPACES") else "默认值"
+    print(f"spec 工作区根目录: {root}  (来源: {origin})")
+    print("-" * 60)
+
+    results: list[tuple[str, bool, str, str]] = []
+
+    # 外部命令：ffprobe / ffmpeg
+    for cmd, advice in (
+        ("ffprobe", "安装 ffmpeg（含 ffprobe）并加入 PATH：https://ffmpeg.org/download.html"),
+        ("ffmpeg", "同上，ffmpeg 与 ffprobe 通常一起安装"),
+    ):
+        detail = _probe_command(cmd)
+        results.append((cmd, detail is not None, detail or "未找到可执行文件", advice))
+
+    # Python 依赖
+    for module, label, advice in (
+        (
+            "scenedetect",
+            "scenedetect",
+            "pip install 'scenedetect>=0.7'（切镜引擎需要）",
+        ),
+        (
+            "opentimelineio",
+            "opentimelineio",
+            "pip install 'opentimelineio>=0.17'（OTIO 导出需要）",
+        ),
+        (
+            "mcp",
+            "mcp",
+            "pip install 'mcp>=1.2'（MCP Server 对外暴露需要）",
+        ),
+    ):
+        ok, detail = _probe_import(module)
+        results.append((f"{label} (import {module})", ok, detail, advice))
+
+    ok_count = 0
+    for name, ok, detail, advice in results:
+        if ok:
+            ok_count += 1
+            print(f"[OK]      {name}  -> {detail}")
+        else:
+            print(f"[MISSING] {name}  -> {detail}")
+            print(f"          建议: {advice}")
+
+    print("-" * 60)
+    print(f"自检完成：{ok_count}/{len(results)} 项可用。缺失项不影响 doctor 运行。")
+    return 0
+
+
+# --------------------------------------------------------------------------- #
+# pipeline 命令（async）
+# --------------------------------------------------------------------------- #
+
+
+async def _cmd_analyze(args: argparse.Namespace) -> int:
+    """一条龙：probe -> detect -> build -> export(fcp7xml)。"""
+    from rve.pipeline.build import build_edit_spec
+    from rve.pipeline.detect import detect_shots
+    from rve.pipeline.export import export_timeline
+    from rve.pipeline.probe import probe_video
+    from rve.schema.enums import DetectEngine, ExportFormat
+    from rve.schema.results import AudioAnalysisResult, ToolReceipt
+
+    engine = DetectEngine(args.engine)
+    probe = await probe_video(args.video)
+    shots = await detect_shots(args.video, engine, None, 0.0, None)
+
+    # Phase 0：audio 能力未实现，按约定传空实例（不调用 analyze_audio）
+    audio = AudioAnalysisResult(receipt=ToolReceipt(tool="noop"))
+
+    built = await build_edit_spec(probe, shots, audio, descriptions=None, spec_id=None)
+
+    out_path = None
+    if args.out:
+        out_dir = Path(args.out)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = str(out_dir / f"{built.spec_id}.fcp7xml.xml")
+
+    exported = await export_timeline(
+        built.spec_id, ExportFormat.FCP7XML, out_path, args.fps
+    )
+
+    print(f"spec_id: {built.spec_id}")
+    print(f"产物: {exported.out_path}")
+    return 0
+
+
+# 命令行 format 取值 -> 受控词表
+_EXPORT_FORMATS = {"fcp7xml", "edl", "otio"}
+
+
+async def _cmd_export(args: argparse.Namespace) -> int:
+    """按 spec_id 导出时间线。"""
+    from rve.pipeline.export import export_timeline
+    from rve.schema.enums import ExportFormat
+
+    fmt = ExportFormat(args.format)
+    result = await export_timeline(args.spec_id, fmt, args.out, args.fps)
+    print(f"产物: {result.out_path}")
+    print(f"格式: {result.format}")
+    return 0
+
+
+async def _cmd_report(args: argparse.Namespace) -> int:
+    """按 spec_id 渲染复核报告。"""
+    from rve.pipeline.report import render_report
+
+    result = await render_report(args.spec_id, args.format)
+    print(f"产物: {result.out_path}")
+    print(f"格式: {result.format}")
+    return 0
+
+
+async def _cmd_specs(_args: argparse.Namespace) -> int:
+    """列出工作区中已有的 spec_id。"""
+    from rve.workspace import list_specs
+
+    ids = list_specs()
+    if inspect.isawaitable(ids):
+        ids = await ids
+
+    ids = list(ids or [])
+    if not ids:
+        print("（工作区中暂无已保存的 spec）")
+        return 0
+    for spec_id in ids:
+        print(spec_id)
+    return 0
+
+
+# --------------------------------------------------------------------------- #
+# 分发与入口
+# --------------------------------------------------------------------------- #
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """构建 CLI 参数解析器（子命令：doctor/analyze/export/report/specs）。"""
+    parser = argparse.ArgumentParser(
+        prog="rve",
+        description="RVE — 从成片逆向还原可导入 NLE 的编辑时间线。",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p_doctor = sub.add_parser("doctor", help="探测本地依赖与工作区（只报告，不修改）")
+    p_doctor.set_defaults(handler=_cmd_doctor)
+
+    p_analyze = sub.add_parser(
+        "analyze", help="一条龙：探测 -> 切镜 -> 建 spec -> 导出 fcp7xml"
+    )
+    p_analyze.add_argument("video", help="输入视频路径")
+    p_analyze.add_argument("--fps", type=float, default=None, help="覆盖导出帧率")
+    p_analyze.add_argument("--out", default=None, help="产物输出目录")
+    p_analyze.add_argument(
+        "--engine",
+        choices=["auto", "content", "adaptive"],
+        default="auto",
+        help="切镜引擎（默认 auto）",
+    )
+    p_analyze.set_defaults(handler=_cmd_analyze)
+
+    p_export = sub.add_parser("export", help="把 spec 导出为 NLE 时间线")
+    p_export.add_argument("spec_id", help="目标 spec id")
+    p_export.add_argument(
+        "--format",
+        choices=sorted(_EXPORT_FORMATS),
+        default="fcp7xml",
+        help="导出格式（默认 fcp7xml）",
+    )
+    p_export.add_argument("--out", default=None, help="输出文件路径")
+    p_export.add_argument("--fps", type=float, default=None, help="覆盖时间线帧率")
+    p_export.set_defaults(handler=_cmd_export)
+
+    p_report = sub.add_parser("report", help="渲染复核报告")
+    p_report.add_argument("spec_id", help="目标 spec id")
+    p_report.add_argument(
+        "--format",
+        choices=["html", "json"],
+        default="html",
+        help="报告格式（默认 html）",
+    )
+    p_report.set_defaults(handler=_cmd_report)
+
+    p_specs = sub.add_parser("specs", help="列出工作区已有的 spec_id")
+    p_specs.set_defaults(handler=_cmd_specs)
+
+    return parser
+
+
+def _run(coro) -> int:
+    """执行 async 处理函数并统一映射退出码。
+
+    NotImplementedError -> 2（人话提示，Phase 2 待补）
+    其他异常            -> 1（简短信息，绝不假装成功）
+    """
+    try:
+        return asyncio.run(coro)
+    except NotImplementedError:
+        print(_NOT_IMPLEMENTED_HINT, file=sys.stderr)
+        return 2
+    except Exception as exc:  # noqa: BLE001 — 顶层兜底，错误必须可见
+        print(f"错误：{type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI 入口：解析参数并分派到对应子命令，返回进程退出码。"""
+    parser = build_parser()
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as exc:  # argparse 的 --help/参数错误走这里
+        return exc.code if isinstance(exc.code, int) else 1
+
+    handler = args.handler
+    try:
+        if inspect.iscoroutinefunction(handler):
+            return _run(handler(args))
+        return handler(args)
+    except KeyboardInterrupt:
+        print("已中断。", file=sys.stderr)
+        return 130
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

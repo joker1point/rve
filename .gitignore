@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+
+# 测试 / 构建产物
+.pytest_cache/
+dist/
+build/
+
+# 虚拟环境
+.venv/
+venv/
+
+# RVE 运行期工作区（spec 落盘位置；可用 RVE_WORKSPACES 覆盖到别处）
+.rve/
+
+# 验收脚本与命令产出的本地临时目录
+out/
+exports/
+reports/
+_scratch/
+_tmp/
+
+# 本地工作日志（个人决策脉络，不入公开仓库）
+usercontext/

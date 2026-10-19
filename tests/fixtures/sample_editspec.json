@@ -1,0 +1,199 @@
+{
+  "schema_version": "0.1",
+  "spec_id": "fixture-0001",
+  "created_at": "2026-10-19T14:02:11Z",
+  "source": {
+    "path": "fixtures/sample.mp4",
+    "duration_sec": 12.34,
+    "fps": 30.0,
+    "width": 1080,
+    "height": 1920,
+    "rotation": 0,
+    "container": "mov,mp4,m4a,3gp,3g2,mj2",
+    "video_codec": "h264",
+    "audio_channels": 2,
+    "audio_sample_rate": 48000,
+    "has_audio": true
+  },
+  "shots": [
+    {
+      "index": 0,
+      "in_sec": 0.0,
+      "out_sec": 2.31,
+      "cut_type": "hard",
+      "speed": 1.0,
+      "speed_mode": "normal",
+      "shot_size": "close_up",
+      "camera_move": "static",
+      "description": "人物近景对镜说话，室内暖光",
+      "ocr_text": ["3秒教你涨粉"],
+      "keyframe_path": "frames/0000.jpg",
+      "confidence": {
+        "boundary": 0.97,
+        "cut_type": 0.92,
+        "shot_size": 0.71,
+        "camera_move": 0.66,
+        "description": 0.8,
+        "overall": 0.86
+      }
+    },
+    {
+      "index": 1,
+      "in_sec": 2.31,
+      "out_sec": 5.02,
+      "cut_type": "dissolve",
+      "transition": {
+        "type": "dissolve",
+        "duration_sec": 0.4,
+        "confidence": 0.58
+      },
+      "speed": 1.0,
+      "speed_mode": "normal",
+      "shot_size": "wide",
+      "camera_move": "pan",
+      "description": "街景横移，人群",
+      "confidence": {
+        "boundary": 0.93,
+        "cut_type": 0.58,
+        "shot_size": 0.7,
+        "camera_move": 0.6,
+        "description": 0.75,
+        "overall": 0.72
+      }
+    },
+    {
+      "index": 2,
+      "in_sec": 5.02,
+      "out_sec": 6.0,
+      "cut_type": "hard",
+      "speed": 1.0,
+      "speed_mode": "normal",
+      "shot_size": "medium",
+      "camera_move": "static",
+      "description": "产品特写插入",
+      "confidence": {
+        "boundary": 0.95,
+        "cut_type": 0.9,
+        "shot_size": 0.62,
+        "camera_move": 0.6,
+        "description": 0.7,
+        "overall": 0.79
+      }
+    },
+    {
+      "index": 3,
+      "in_sec": 6.0,
+      "out_sec": 9.4,
+      "cut_type": "hard",
+      "speed": 1.0,
+      "speed_mode": "normal",
+      "shot_size": "medium_wide",
+      "camera_move": "dolly",
+      "description": "演示操作过程",
+      "confidence": {
+        "boundary": 0.94,
+        "cut_type": 0.88,
+        "shot_size": 0.6,
+        "camera_move": 0.55,
+        "description": 0.68,
+        "overall": 0.76
+      }
+    },
+    {
+      "index": 4,
+      "in_sec": 9.4,
+      "out_sec": 12.34,
+      "cut_type": "fade",
+      "transition": {
+        "type": "fade",
+        "duration_sec": 0.6,
+        "confidence": 0.81
+      },
+      "speed": 1.0,
+      "speed_mode": "normal",
+      "shot_size": "close_up",
+      "camera_move": "static",
+      "description": "人物总结收尾，画面淡出",
+      "confidence": {
+        "boundary": 0.96,
+        "cut_type": 0.81,
+        "shot_size": 0.69,
+        "camera_move": 0.64,
+        "description": 0.78,
+        "overall": 0.83
+      }
+    }
+  ],
+  "audio": {
+    "stems": [
+      { "kind": "vocals", "path": "stems/vocals.wav", "duration_sec": 12.34 },
+      { "kind": "bgm", "path": "stems/bgm.wav", "duration_sec": 12.34 }
+    ],
+    "speakers": [
+      {
+        "id": "S1",
+        "label": null,
+        "segments": [
+          { "speaker_id": "S1", "in_sec": 0.2, "out_sec": 2.0, "text": "三秒教你涨粉" },
+          { "speaker_id": "S1", "in_sec": 6.1, "out_sec": 9.2, "text": "点这里就能看到效果" }
+        ]
+      }
+    ],
+    "beats": [0.48, 1.2, 1.92, 2.64, 3.36, 4.08, 4.8],
+    "beat_sync_ratio": 0.66,
+    "has_music": true,
+    "has_speech": true
+  },
+  "subtitles": [
+    {
+      "in_sec": 0.2,
+      "out_sec": 2.0,
+      "text": "三秒教你涨粉",
+      "speaker_id": "S1",
+      "source": "fused",
+      "style_hint": "bottom-center"
+    },
+    {
+      "in_sec": 6.1,
+      "out_sec": 9.2,
+      "text": "点这里就能看到效果",
+      "speaker_id": "S1",
+      "source": "asr",
+      "style_hint": "bottom-center"
+    }
+  ],
+  "rhythm": {
+    "shot_count": 5,
+    "avg_shot_sec": 2.468,
+    "median_shot_sec": 2.71,
+    "shortest_shot_sec": 0.98,
+    "longest_shot_sec": 3.4,
+    "cuts_per_min": 24.31,
+    "cut_curve": "fast_start"
+  },
+  "global_style": { "aspect_ratio": 0.5625 },
+  "uncertain": [
+    {
+      "field_path": "shots[1].cut_type",
+      "reason": "双引擎分歧：Content=hard, TransNetV2=dissolve",
+      "candidates": ["hard", "dissolve"]
+    },
+    {
+      "field_path": "shots[1].transition.duration_sec",
+      "reason": "渐变时长估计置信度低",
+      "candidates": []
+    }
+  ],
+  "evidence": [
+    { "kind": "frame", "path": "frames/0001.jpg" },
+    { "kind": "spectrogram", "path": "evidence/audio_spec.png" }
+  ],
+  "provenance": [
+    {
+      "tool": "pyscenedetect@0.7.1",
+      "params": { "detector": "adaptive" },
+      "duration_ms": 4120
+    }
+  ],
+  "warnings": ["cloud VLM 未启用，逐镜描述来自本地模型"]
+}

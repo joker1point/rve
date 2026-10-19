@@ -1,0 +1,62 @@
+[project]
+name = "rve"
+version = "0.1.0"
+description = "RVE — Reverse Video Engineering：从成片还原可导入 NLE 的编辑时间线（C 型）"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "RVE contributors" }]
+keywords = [
+  "video-editing",
+  "reverse-engineering",
+  "nle",
+  "fcp7xml",
+  "fcpxml",
+  "edl",
+  "otio",
+  "mcp",
+  "shot-detection",
+  "ffmpeg",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Multimedia :: Video",
+  "Topic :: Multimedia :: Video :: Non-Linear Editor",
+]
+dependencies = [
+  "pydantic>=2.7",
+  "mcp>=1.2",
+  "opentimelineio>=0.17",
+  "scenedetect>=0.7",
+]
+
+[project.urls]
+Homepage = "https://github.com/joker1point/rve"
+Repository = "https://github.com/joker1point/rve"
+Issues = "https://github.com/joker1point/rve/issues"
+
+[project.optional-dependencies]
+audio = ["faster-whisper", "demucs", "pyannote.audio", "librosa"]
+vision = ["rapidocr-onnxruntime"]
+dev = ["pytest>=8", "build>=1.2"]
+
+[project.scripts]
+rve = "rve.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rve"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
