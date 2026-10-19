@@ -44,6 +44,22 @@ def _transition_type(otio, cut_type: CutType):
     return getattr(types, "TransitionType_Dissolve", "Dissolve")
 
 
+def _source_reference(otio, spec: EditSpec):
+    """源素材引用：C 型场景下所有镜头共享同一个源文件。
+
+    必须显式写 ExternalReference 并带 available_range —— 否则 OTIO 会给 Clip
+    默认挂一个 MissingReference，导出的 .otio 在 NLE 里重链不回原片（媒体全丢）。
+    """
+    rate = float(spec.source.fps)
+    return otio.schema.ExternalReference(
+        target_url=str(spec.source.path),
+        available_range=otio.opentime.TimeRange(
+            start_time=otio.opentime.RationalTime(0.0, rate),
+            duration=otio.opentime.RationalTime(spec.source.duration_sec, rate),
+        ),
+    )
+
+
 def to_otio(spec: EditSpec):
     """把 EditSpec 转成 opentimelineio.schema.Timeline（含 video / audio 轨）。"""
     otio = _require_otio()
@@ -68,6 +84,8 @@ def to_otio(spec: EditSpec):
             start_time=otio.opentime.RationalTime(shot.in_sec, rate),
             duration=otio.opentime.RationalTime(shot.duration_sec, rate),
         )
+        # 挂回源素材，否则导出物无法在 NLE 里重链媒体
+        clip.media_reference = _source_reference(otio, spec)
         video_track.append(clip)
 
     timeline.tracks.append(video_track)

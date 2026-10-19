@@ -635,7 +635,7 @@ def stage_s5_formats(ctx: Context) -> tuple[str, list[str]]:
         else:
             detail.append(f"{fmt}: {out_path.name} ({out_path.stat().st_size} bytes)")
 
-    # OTIO 往返：读回并断言镜头数 == EditSpec 镜头数
+    # OTIO 往返：读回并断言 (a) 镜头数 == EditSpec 镜头数、(b) 每个 clip 都挂回了源媒体
     otio_path = outputs["otio"]
     probe_rc, _, _ = _run(
         [ctx.venv_py, "-c", "import opentimelineio"], env=_venv_env(), timeout=120
@@ -643,10 +643,17 @@ def stage_s5_formats(ctx: Context) -> tuple[str, list[str]]:
     if probe_rc != 0:
         detail.append("OTIO 往返: SKIP —— venv 内无 opentimelineio（已显式注明，非静默跳过）")
     elif otio_path.exists() and otio_path.stat().st_size > 0:
+        # 除了数 clip，还要查媒体引用：OTIO 对未设 media_reference 的 Clip 默认挂
+        # MissingReference，导出的 .otio 在 NLE 里重链不回原片（媒体全丢）。
         code = (
-            "import opentimelineio as otio, sys;"
+            "import json, opentimelineio as otio, sys;"
             "tl = otio.adapters.read_from_file(sys.argv[1]);"
-            "print(sum(1 for it in tl.tracks[0] if isinstance(it, otio.schema.Clip)))"
+            "clips = [it for it in tl.tracks[0] if isinstance(it, otio.schema.Clip)];"
+            "print(json.dumps({"
+            "'clips': len(clips),"
+            "'missing_ref': sum(1 for c in clips if isinstance(c.media_reference, otio.schema.MissingReference)),"
+            "'no_url': sum(1 for c in clips if not getattr(c.media_reference, 'target_url', '')),"
+            "}))"
         )
         rc, out, err = _run(
             [ctx.venv_py, "-c", code, str(otio_path)], env=_venv_env(), timeout=300
@@ -655,18 +662,29 @@ def stage_s5_formats(ctx: Context) -> tuple[str, list[str]]:
             problems.append(f"OTIO 读回失败: {(out + err).strip()[-400:]}")
         else:
             try:
-                count = int(out.strip().splitlines()[-1])
+                stats = json.loads(out.strip().splitlines()[-1])
             except (ValueError, IndexError):
-                problems.append(f"OTIO 读回镜头数解析失败: {out.strip()[-200:]}")
-                count = None
-            if count is not None:
+                problems.append(f"OTIO 读回结果解析失败: {out.strip()[-200:]}")
+                stats = None
+            if stats is not None:
+                count = int(stats["clips"])
                 expected = len(
                     json.loads(ctx.spec_path.read_text(encoding="utf-8")).get("shots", [])
                 )
                 if count != expected:
                     problems.append(f"OTIO 镜头数 {count} != EditSpec 镜头数 {expected}")
+                elif stats.get("missing_ref"):
+                    problems.append(
+                        f"OTIO 有 {stats['missing_ref']} 个 clip 为 MissingReference（媒体未挂回源素材）"
+                    )
+                elif stats.get("no_url"):
+                    problems.append(
+                        f"OTIO 有 {stats['no_url']} 个 clip 缺 target_url（无法重链媒体）"
+                    )
                 else:
-                    detail.append(f"OTIO 往返 OK: 视频轨 Clip 数 {count} == EditSpec 镜头数")
+                    detail.append(
+                        f"OTIO 往返 OK: 视频轨 Clip 数 {count} == EditSpec 镜头数，媒体引用齐全"
+                    )
     else:
         detail.append("OTIO 往返: 跳过（OTIO 文件未产出）")
 

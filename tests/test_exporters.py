@@ -373,7 +373,8 @@ def test_to_otio_structure() -> None:
     otio = pytest.importorskip("opentimelineio")
     from rve.exporters.otio_export import to_otio
 
-    timeline = to_otio(_load_spec())
+    spec = _load_spec()
+    timeline = to_otio(spec)
     assert isinstance(timeline, otio.schema.Timeline)
     # 视频 + 音频两条轨
     assert len(timeline.tracks) == 2
@@ -381,6 +382,11 @@ def test_to_otio_structure() -> None:
     clips = [c for c in video if isinstance(c, otio.schema.Clip)]
     assert len(clips) == 5
     assert clips[0].source_range.start_time.value == pytest.approx(0.0, abs=1e-6)
+    # 每个 clip 必须显式挂回源素材（ExternalReference + target_url）：
+    # 否则 OTIO 默认给 MissingReference，导出的 .otio 在 NLE 里重链不回媒体。
+    for c in clips:
+        assert isinstance(c.media_reference, otio.schema.ExternalReference)
+        assert c.media_reference.target_url == spec.source.path
 
 
 def test_write_otio(tmp_path: Path) -> None:
