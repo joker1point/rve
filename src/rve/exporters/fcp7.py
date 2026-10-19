@@ -217,7 +217,7 @@ def _transition_names(cut_type: CutType) -> tuple[str, str, str]:
 def _transitionitem(shot, fps: float, cut_f: int) -> ET.Element:
     """构造 <transitionitem>（仅用于 dissolve / fade）。
 
-    时长取 transition.duration_sec 换算帧数，缺省给 1 帧。
+    时长取 transition.duration_sec 换算帧数，下限 2 帧（理由见下方退化分支）。
     <start>/<end> 同样是序列时间轴位置：转场应**跨骑在剪切点两侧**，
     故 start = 剪切点 - 时长//2，end = start + 时长（左端钳到 0）。
     ⚠️ 不确定项：effectid/effectcategory 取值、以及 NLE 导入时对相邻 clipitem
@@ -227,8 +227,10 @@ def _transitionitem(shot, fps: float, cut_f: int) -> ET.Element:
     name, effectid, category = _transition_names(shot.cut_type)
     src = shot.transition
     dur = _sec_to_frames(src.duration_sec, fps) if src is not None else 0
-    if dur <= 0:
-        dur = 1  # 缺省/退化：至少 1 帧
+    if dur < 2:
+        # 下限 2 帧：整数帧下"严格跨骑剪切点"（start < 剪切点 < end）最少需要
+        # 切点前后各 1 帧。若退化为 1 帧，start 恰好等于剪切点，直接违反导出契约。
+        dur = 2
     start_f = max(0, cut_f - dur // 2)
     ET.SubElement(item, "name").text = name
     ET.SubElement(item, "duration").text = str(dur)

@@ -643,14 +643,19 @@ def stage_s5_formats(ctx: Context) -> tuple[str, list[str]]:
     if probe_rc != 0:
         detail.append("OTIO 往返: SKIP —— venv 内无 opentimelineio（已显式注明，非静默跳过）")
     elif otio_path.exists() and otio_path.stat().st_size > 0:
-        # 除了数 clip，还要查媒体引用：OTIO 对未设 media_reference 的 Clip 默认挂
-        # MissingReference，导出的 .otio 在 NLE 里重链不回原片（媒体全丢）。
+        # 除了数 clip，还要查两件事：
+        #  (a) 媒体引用：OTIO 对未设 media_reference 的 Clip 默认挂 MissingReference，
+        #      导出的 .otio 在 NLE 里重链不回原片（媒体全丢）；
+        #  (b) 时间轴时长：OTIO 的 RationalTime(value, rate) 里 value 以 rate 为单位，
+        #      必须按帧率换算；把秒直接塞进 value 会让时长缩到 1/fps（曾实测 61.8s→2.6s）。
         code = (
             "import json, opentimelineio as otio, sys;"
             "tl = otio.adapters.read_from_file(sys.argv[1]);"
             "clips = [it for it in tl.tracks[0] if isinstance(it, otio.schema.Clip)];"
             "print(json.dumps({"
             "'clips': len(clips),"
+            "'tl_seconds': tl.duration().to_seconds(),"
+            "'clips_seconds': sum(c.source_range.duration.to_seconds() for c in clips),"
             "'missing_ref': sum(1 for c in clips if isinstance(c.media_reference, otio.schema.MissingReference)),"
             "'no_url': sum(1 for c in clips if not getattr(c.media_reference, 'target_url', '')),"
             "}))"
@@ -668,11 +673,19 @@ def stage_s5_formats(ctx: Context) -> tuple[str, list[str]]:
                 stats = None
             if stats is not None:
                 count = int(stats["clips"])
-                expected = len(
-                    json.loads(ctx.spec_path.read_text(encoding="utf-8")).get("shots", [])
-                )
+                spec_data = json.loads(ctx.spec_path.read_text(encoding="utf-8"))
+                expected = len(spec_data.get("shots", []))
+                src_sec = float((spec_data.get("source") or {}).get("duration_sec") or 0.0)
+                # 用"所有 clip 的源区间之和"对比源时长（时间轴另有转场 offset，口径不同）
+                clips_sec = float(stats.get("clips_seconds") or 0.0)
+                tl_sec = float(stats.get("tl_seconds") or 0.0)
                 if count != expected:
                     problems.append(f"OTIO 镜头数 {count} != EditSpec 镜头数 {expected}")
+                elif src_sec > 0 and abs(clips_sec - src_sec) > max(0.05, src_sec * 0.005):
+                    problems.append(
+                        f"OTIO 镜头区间之和 {clips_sec:.3f}s != 源时长 {src_sec:.3f}s"
+                        "（RationalTime 的 value 以 rate 为单位，须按帧率换算，不能直接塞秒）"
+                    )
                 elif stats.get("missing_ref"):
                     problems.append(
                         f"OTIO 有 {stats['missing_ref']} 个 clip 为 MissingReference（媒体未挂回源素材）"
@@ -683,7 +696,9 @@ def stage_s5_formats(ctx: Context) -> tuple[str, list[str]]:
                     )
                 else:
                     detail.append(
-                        f"OTIO 往返 OK: 视频轨 Clip 数 {count} == EditSpec 镜头数，媒体引用齐全"
+                        f"OTIO 往返 OK: 视频轨 Clip 数 {count} == EditSpec 镜头数，"
+                        f"媒体引用齐全，镜头区间之和 {clips_sec:.3f}s == 源时长 {src_sec:.3f}s"
+                        f"（时间轴含转场 offset = {tl_sec:.3f}s）"
                     )
     else:
         detail.append("OTIO 往返: 跳过（OTIO 文件未产出）")

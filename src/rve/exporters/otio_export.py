@@ -3,7 +3,8 @@
 关键约束：本模块顶层**绝不 import otio**，这样在未安装 opentimelineio 的环境里
 模块仍可被 import，依赖 otio 的测试用 `pytest.importorskip("opentimelineio")` 跳过。
 
-我们把 EditSpec 里的秒直接映射为 OTIO 的 RationalTime（rate = 源帧率），并保留
+我们把 EditSpec 里的秒按源帧率换算为帧，再写成 OTIO 的 RationalTime
+（RationalTime 的 value 以 rate 为单位，不能直接塞秒 —— 见 `_rt`），并保留
 dissolve / fade 为 OTIO 的 Transition，使 OTIO 能再适配到其它 NLE 格式。
 """
 
@@ -44,6 +45,17 @@ def _transition_type(otio, cut_type: CutType):
     return getattr(types, "TransitionType_Dissolve", "Dissolve")
 
 
+def _rt(otio, seconds: float, rate: float):
+    """秒 → RationalTime（rate 取源帧率）。
+
+    ⚠️ OTIO 的 `RationalTime(value, rate)` 中 **value 是以 rate 为单位的计数**：
+    rate 取帧率时 value 就是帧号，`RationalTime(4.209, 24)` 表示 4.209 **帧**，
+    即 0.175s，而不是 4.209s。直接把秒塞进 value 会让整条时间轴缩到 1/fps
+    （实测 61.808s 的成片读回只有 2.575s）。所以这里必须先乘帧率。
+    """
+    return otio.opentime.RationalTime(float(seconds) * rate, rate)
+
+
 def _source_reference(otio, spec: EditSpec):
     """源素材引用：C 型场景下所有镜头共享同一个源文件。
 
@@ -54,8 +66,8 @@ def _source_reference(otio, spec: EditSpec):
     return otio.schema.ExternalReference(
         target_url=str(spec.source.path),
         available_range=otio.opentime.TimeRange(
-            start_time=otio.opentime.RationalTime(0.0, rate),
-            duration=otio.opentime.RationalTime(spec.source.duration_sec, rate),
+            start_time=_rt(otio, 0.0, rate),
+            duration=_rt(otio, spec.source.duration_sec, rate),
         ),
     )
 
@@ -74,15 +86,15 @@ def to_otio(spec: EditSpec):
             trans = otio.schema.Transition(name=str(shot.cut_type))
             trans.transition_type = _transition_type(otio, shot.cut_type)
             half = shot.transition.duration_sec / 2.0
-            trans.in_offset = otio.opentime.RationalTime(half, rate)
-            trans.out_offset = otio.opentime.RationalTime(half, rate)
+            trans.in_offset = _rt(otio, half, rate)
+            trans.out_offset = _rt(otio, half, rate)
             video_track.append(trans)
 
         clip = otio.schema.Clip(name=f"shot_{shot.index}")
         # 源在素材中的区间（C 型：源素材即原片）
         clip.source_range = otio.opentime.TimeRange(
-            start_time=otio.opentime.RationalTime(shot.in_sec, rate),
-            duration=otio.opentime.RationalTime(shot.duration_sec, rate),
+            start_time=_rt(otio, shot.in_sec, rate),
+            duration=_rt(otio, shot.duration_sec, rate),
         )
         # 挂回源素材，否则导出物无法在 NLE 里重链媒体
         clip.media_reference = _source_reference(otio, spec)

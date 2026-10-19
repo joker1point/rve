@@ -22,8 +22,8 @@ import pytest
 from rve.exporters.fcp7 import _path_to_file_url, to_fcp7_xml, write_fcp7_xml
 from rve.pipeline.export import export_timeline
 from rve.pipeline.report import render_report
-from rve.schema.editspec import EditSpec, Shot, VideoSource
-from rve.schema.enums import ExportFormat
+from rve.schema.editspec import EditSpec, Shot, Transition, VideoSource
+from rve.schema.enums import CutType, ExportFormat
 
 FIXTURE = Path(__file__).parent / "fixtures" / "sample_editspec.json"
 
@@ -191,6 +191,51 @@ def test_transitionitem_only_at_dissolve_fade() -> None:
     # 硬切处不插 transitionitem：shots[0]/[2]/[3] 为 hard
     item_ids = [ci.get("id") for ci in _video_items(root)]
     assert item_ids == [f"clipitem-{n}" for n in range(5)]
+
+
+def test_transition_duration_floor_keeps_straddle() -> None:
+    """转场时长换算不足 2 帧时，帧数下限必须夹到 2 帧。
+
+    整数帧下"严格跨骑剪切点"（start < 剪切点 < end）最少需要切点前后各 1 帧；
+    若退化成 1 帧，start 会恰好落在剪切点上，导出契约随即失效
+    （交付闸门的 FCP7 契约断言会报"未跨骑剪切点"）。
+    """
+    source = VideoSource(
+        path="C:\\videos\\a.mp4",
+        duration_sec=10.0,
+        fps=30.0,
+        width=1920,
+        height=1080,
+        has_audio=False,
+    )
+    spec = EditSpec(
+        spec_id="t-degenerate",
+        source=source,
+        shots=[
+            Shot(index=0, in_sec=0.0, out_sec=5.0),
+            Shot(
+                index=1,
+                in_sec=5.0,
+                out_sec=10.0,
+                cut_type=CutType.DISSOLVE,
+                # 0 秒转场 → 换算帧数 0，退化分支必须给到 2 帧而不是 1 帧
+                transition=Transition(type=CutType.DISSOLVE, duration_sec=0.0),
+            ),
+        ],
+    )
+    root = ET.fromstring(to_fcp7_xml(spec))
+    transitions = _video_transitions(root)
+    assert len(transitions) == 1
+
+    t = transitions[0]
+    dur = int(t.find("duration").text)
+    start, end = int(t.find("start").text), int(t.find("end").text)
+    assert dur == 2, f"退化下限应为 2 帧，实为 {dur}"
+    assert end - start == dur
+
+    # 剪切点 = 第 2 镜在序列时间轴上的起点
+    cut = int(_video_items(root)[1].find("start").text)
+    assert start < cut < end, f"未跨骑剪切点: [{start}, {end}) cut={cut}"
 
 
 def test_file_element_name_and_pathurl() -> None:
@@ -387,6 +432,43 @@ def test_to_otio_structure() -> None:
     for c in clips:
         assert isinstance(c.media_reference, otio.schema.ExternalReference)
         assert c.media_reference.target_url == spec.source.path
+
+
+def test_to_otio_rational_time_units_are_frames() -> None:
+    """OTIO 的 RationalTime(value, rate) 里 value 以 rate 为单位（帧），不是秒。
+
+    回归锁：曾把秒直接塞进 value，12.34s 的片子读回 0.41s（差 fps 倍），
+    导出的 .otio 进 NLE 后整条时间轴被压到 1/fps。
+    """
+    otio = pytest.importorskip("opentimelineio")
+    from rve.exporters.otio_export import to_otio
+
+    spec = _load_spec()  # 12.34s @ 30fps
+    timeline = to_otio(spec)
+    clips = [c for c in timeline.tracks[0] if isinstance(c, otio.schema.Clip)]
+    assert len(clips) == len(spec.shots)
+
+    for shot, clip in zip(spec.shots, clips):
+        assert clip.source_range.start_time.to_seconds() == pytest.approx(shot.in_sec, abs=1e-6)
+        assert clip.source_range.duration.to_seconds() == pytest.approx(
+            shot.duration_sec, abs=1e-6
+        )
+
+    # 镜头区间之和必须等于源时长（旧实现会得到 12.34/30 == 0.411s）
+    total_sec = sum(c.source_range.duration.to_seconds() for c in clips)
+    assert total_sec == pytest.approx(spec.source.duration_sec, abs=1e-3)
+
+    # 源素材的 available_range 同样必须是帧口径
+    ref = clips[0].media_reference
+    assert ref.available_range.duration.to_seconds() == pytest.approx(
+        spec.source.duration_sec, abs=1e-3
+    )
+
+    # 转场 offset 也按帧换算（夹具 shots[1] 为 dissolve 0.4s → 单侧 0.2s）
+    trans = [t for t in timeline.tracks[0] if isinstance(t, otio.schema.Transition)]
+    assert trans
+    assert trans[0].in_offset.to_seconds() == pytest.approx(0.2, abs=1e-6)
+    assert trans[0].out_offset.to_seconds() == pytest.approx(0.2, abs=1e-6)
 
 
 def test_write_otio(tmp_path: Path) -> None:
