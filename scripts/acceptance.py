@@ -341,32 +341,45 @@ def stage_s0_preflight(ctx: Context) -> tuple[str, list[str]]:
     return (FAIL if problems else PASS), detail + problems
 
 
+def _count_word(out: str, word: str) -> int:
+    """从 pytest 摘要里取 "<n> <word>" 形式的计数。"""
+    m = re.search(rf"(\d+)\s+{word}s?\b", out)
+    return int(m.group(1)) if m else 0
+
+
+def _pytest_verdict(rc: int, out: str, label: str) -> tuple[bool, list[str]]:
+    """统一的 pytest 判据（S1 宿主 / S2b 全新 venv 共用，避免两套口径）：
+
+    仅当 exit 0 且 0 failed / 0 errors 才算过。
+    """
+    detail = [
+        f"{label} 退出码: {rc}",
+        "passed={} skipped={} failed={} errors={}".format(
+            _count_word(out, "passed"),
+            _count_word(out, "skipped"),
+            _count_word(out, "failed"),
+            _count_word(out, "error"),
+        ),
+    ]
+    ok = (
+        rc == 0
+        and not _count_word(out, "failed")
+        and not _count_word(out, "error")
+    )
+    if not ok and rc != 0 and not (_count_word(out, "failed") or _count_word(out, "error")):
+        detail.append("退出码非 0 且未见 failed/errors —— 可能是收集/导入错误")
+    return ok, detail
+
+
 def stage_s1_tests(ctx: Context) -> tuple[str, list[str]]:
-    """S1 单测套件：子进程跑 pytest，要求 exit 0 且 0 failed / 0 errors。"""
+    """S1 单测套件（宿主解释器）：要求 exit 0 且 0 failed / 0 errors。"""
     rc, out, err = _run(
         [sys.executable, "-m", "pytest", "-q"], cwd=REPO_ROOT, timeout=1200
     )
-    tail = "\n".join([ln for ln in (out.strip().splitlines() + err.strip().splitlines()) if ln][-6:])
-
-    def _count(word: str) -> int:
-        m = re.search(rf"(\d+)\s+{word}s?\b", out)
-        return int(m.group(1)) if m else 0
-
-    failed = _count("failed")
-    errors = _count("error")
-    passed = _count("passed")
-    skipped = _count("skipped")
-
-    detail = [
-        f"pytest 退出码: {rc}",
-        f"passed={passed} skipped={skipped} failed={failed} errors={errors}",
-        f"摘要末行: {tail.splitlines()[-1] if tail else '(无)'}",
-    ]
-    if rc != 0 or failed or errors:
-        if rc != 0 and not (failed or errors):
-            detail.append("退出码非 0 且未见 failed/errors —— 可能是收集/导入错误")
-        return FAIL, detail
-    return PASS, detail
+    ok, detail = _pytest_verdict(rc, out, "宿主 pytest")
+    tail = "\n".join([ln for ln in (out.strip().splitlines() + err.strip().splitlines()) if ln][-1:])
+    detail.append(f"摘要末行: {tail or '(无)'}")
+    return (PASS if ok else FAIL), detail
 
 
 def _ensure_build_python(ctx: Context) -> tuple[Path | None, list[str]]:
@@ -490,6 +503,51 @@ def stage_s2_build_install(ctx: Context) -> tuple[str, list[str]]:
     if probs:
         return FAIL, detail + probs
     return PASS, detail
+
+
+def stage_s2b_tests_in_venv(ctx: Context) -> tuple[str, list[str]]:
+    """S2b 全新 venv 内跑单测 —— 专挡"宿主绿、全新环境红"的依赖版本坑。
+
+    为什么必须单列一阶段：S1 的 pytest 跑在**宿主**解释器上（开发机常驻旧依赖），
+    而真实用户 / CI 用的是**全新 venv**（会解析到最新依赖）。同一份代码，两处
+    依赖版本可能不同 —— 例如 mcp 1.x→2.x 改了属性名 `uriTemplate`→`uri_template`，
+    宿主是 1.x 所以本地绿，CI 装 2.x 直接红。只有把单测放进真交付环境里跑，
+    这类"本地绿≠交付绿"的坑才照得出来。
+    """
+    if ctx.venv_py is None:
+        return FAIL, ["S2 未建立 venv，无法在真交付形态下跑单测"]
+    detail: list[str] = []
+    vpy = ctx.venv_py
+
+    # 主路径的 venv 只装了运行期依赖；单测需要 pytest，缺则**装进 venv**（不污染宿主环境）
+    rc, _, _ = _run([vpy, "-c", "import pytest"], env=_venv_env(), timeout=120)
+    if rc != 0:
+        rc2, out2, err2 = _run(
+            [vpy, "-m", "pip", "install", "pytest"], env=_venv_env(), timeout=600
+        )
+        if rc2 != 0:
+            return FAIL, detail + [
+                "venv 内补装 pytest 失败（疑无网络且非 system-site-packages 兜底路径）",
+                (out2 + err2).strip()[-400:],
+            ]
+        detail.append("venv 内补装 pytest（单测专用，未触碰宿主环境）")
+    else:
+        detail.append("venv 内已具备 pytest")
+
+    rc, out, err = _run(
+        [vpy, "-m", "pytest", "-q", "-p", "no:cacheprovider"],
+        cwd=REPO_ROOT,
+        env=_venv_env(),
+        timeout=1200,
+    )
+    ok, verdict = _pytest_verdict(rc, out, "venv pytest")
+    detail += verdict
+    tail = "\n".join([ln for ln in (out.strip().splitlines() + err.strip().splitlines()) if ln][-1:])
+    detail.append(f"摘要末行: {tail or '(无)'}")
+    detail.append(
+        "真交付环境单测通过（宿主与全新 venv 双绿）" if ok else "真交付环境单测未过 —— 见上方计数"
+    )
+    return (PASS if ok else FAIL), detail
 
 
 def stage_s3_analyze(ctx: Context) -> tuple[str, list[str]]:
@@ -784,6 +842,7 @@ STAGES: list[tuple[str, str, StageFn]] = [
     ("S0", "预检（Python>=3.11 + 仓库布局）", stage_s0_preflight),
     ("S1", "单测套件（pytest -q，exit 0 且 0 failed/errors）", stage_s1_tests),
     ("S2", "构建 wheel + 全新 venv 安装 + rve --help/doctor", stage_s2_build_install),
+    ("S2b", "全新 venv 内跑单测（挡宿主绿/全新红的依赖版本坑）", stage_s2b_tests_in_venv),
     ("S3", "全新 venv 内端到端 analyze（密闭）", stage_s3_analyze),
     ("S4", "FCP7 XML 契约断言（核心验收）", stage_s4_xml_contract),
     ("S5", "格式面（EDL / OTIO + OTIO 往返）", stage_s5_formats),

@@ -79,7 +79,12 @@ def test_mcp_server_builds_and_registers_tools() -> None:
     assert expected <= names
 
     templates = asyncio.run(server.list_resource_templates())
-    uris = {t.uriTemplate for t in templates}
+    # mcp 1.x 的字段名是 uriTemplate，2.x 改名 uri_template —— 两种都读，
+    # 免得"开发机装 1.x 绿、CI/用户全新装 2.x 红"。
+    uris = {
+        getattr(t, "uriTemplate", None) or getattr(t, "uri_template", None)
+        for t in templates
+    }
     assert "editspec://{spec_id}" in uris
 
 
