@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import statistics
 import time
 import uuid
@@ -240,15 +241,40 @@ async def build_edit_spec(
     }
     if transition_result is not None:
         receipt_params["transitions"] = _transition_summary(transition_result)
+
+    # 回执落盘：兑现 workspace 的承诺——每个 spec 目录含 spec.json 与 receipts/。
+    # 并把转场**逐条**证据（峰值差 / 窗口基线 / 信噪比 / 亮度极值）写进交付物，
+    # 使"每条边界带可复核证据"在落盘层面可复现，而不仅存在于 MCP 的瞬时返回里。
+    receipt_dir = workspace.receipt_dir(resolved_id)
+    build_receipt_path = receipt_dir / "build_edit_spec.json"
+    transitions_receipt_path = receipt_dir / "transitions.json"
+    artifacts = [str(path), str(build_receipt_path)]
+    if transition_result is not None and transition_result.receipt is not None:
+        artifacts.append(str(transitions_receipt_path))
+
     receipt = ToolReceipt(
         tool="build_edit_spec",
         params=receipt_params,
         ok=True,
         started_at=started,
         duration_ms=int((time.perf_counter() - t0) * 1000),
-        artifacts=[str(path)],
+        artifacts=artifacts,
         warnings=warnings,
     )
+    build_receipt_path.write_text(receipt.model_dump_json(indent=2), encoding="utf-8")
+    if transition_result is not None and transition_result.receipt is not None:
+        transitions_receipt_path.write_text(
+            json.dumps(
+                {
+                    "tool": transition_result.receipt.tool,
+                    "params": transition_result.receipt.params,
+                    "warnings": transition_result.receipt.warnings,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
     return BuildSpecResult(spec_id=resolved_id, spec=spec, receipt=receipt)
 
 

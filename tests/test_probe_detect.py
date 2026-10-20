@@ -121,3 +121,6 @@ def test_build_and_reload_spec(tmp_path, monkeypatch) -> None:
     )
     assert spec.rhythm.shot_count == len(spec.shots)
     assert spec.rhythm.cuts_per_min > 0
+
+    # 回执落盘：兑现 workspace 的承诺——每个 spec 目录含 spec.json 与 receipts/
+    assert (tmp_path / "build-test" / "receipts" / "build_edit_spec.json").is_file()

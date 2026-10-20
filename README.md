@@ -188,7 +188,7 @@ RVE 需要 Python 3.11/3.12/3.13，外加 ffmpeg（含 ffprobe）。能做什么
 | 转场（溶解 / 淡入淡出）识别 | 每条内部边界的 `cut_type`（`hard`/`dissolve`/`fade`）+ 渐变时长 + 可复核证据（峰值差、基线、信噪比、亮度极值） | 只采边界附近 ≤1s 窗口、不解码整片；证据不足进 `uncertain[]`，绝不静默猜 |
 | 唯一权威结构 | `EditSpec`（连续无重叠铺满、`extra="forbid"`、存疑进 `uncertain[]`） | 见 [EditSpec 契约](#editspec-契约唯一权威结构) |
 | FCP7 XML 时间线 | `<xmeml>` 序列，video 轨 `clipitem` 按序列时间轴累积铺满 | 纯标准库；`export --format fcp7xml` |
-| CMX3600 EDL | 每镜一条 V 轨事件，录机端时间码在序列轴上累积 | 纯标准库；`export --format edl`；会丢转场/变速 |
+| CMX3600 EDL | 每镜一条 V 轨事件，录机端时间码在序列轴上累积 | 纯标准库；`export --format edl`；转场以 `C`/`D`+帧数表达，变速/滤镜/字幕不承载 |
 | OpenTimelineIO | `.otio` 中间层时间线（每个 clip 挂 `ExternalReference` 回源素材） | 运行期依赖 `opentimelineio`（见 `pyproject.toml`）；导出器延迟导入，缺包时 exit 2 |
 | 人类可读复核报告 | 自包含单文件 HTML（源素材 / 节奏统计 / 镜头表 / 转场 / 存疑告警） | `rve report <spec_id>`，固定写 `cwd/reports/` |
 | Agent 编排 | 8 个 MCP 工具 + `editspec://{spec_id}` 资源模板 | 本地 stdio MCP server |
@@ -210,6 +210,8 @@ RVE 需要 Python 3.11/3.12/3.13，外加 ffmpeg（含 ffprobe）。能做什么
 - **每分钟约 9.707 个切点**（节奏曲线 `slow_build`），最短镜头 **1.474s**，无 `< 0.5s` 碎镜；
 - **转场判定**：9 条内部边界 → **7 硬切 / 2 溶解 / 0 淡出**（每条都带峰值差、窗口基线、信噪比等证据）；
 - **`uncertain == 1`**：唯一存疑项是 `shots[9].cut_type`——那条溶解只有 4 帧铺展、置信度 0.42，**显式登记而非静默猜一个标签**。
+
+**落盘证据**：该 spec 的工作区目录含 `spec.json` 与 `receipts/`——`receipts/build_edit_spec.json`（本次组装的回执与产物清单）与 `receipts/transitions.json`（9 条内部边界的**逐条**证据：峰值差 / 窗口基线 / 信噪比 / 亮度极值）。二者均为离线可复核文件，不依赖 MCP 的瞬时返回。
 
 导出的 FCP7 XML 经 **`scripts/independent_verify.py`（不 import `rve.*` 的第二实现）** 回读 → **PASS**：`<xmeml>` version=4、时间轴为纯平移（偏移 ≈ 0 帧、跨 10 镜一致）、末个 clipitem `end=1483` 且 `sequence duration=1483` 与期望一致、`<timebase>=24 <ntsc>=FALSE`、**2 个 `transitionitem` 全部严格跨骑剪切点**、音频轨 10 个 clipitem、`<timecode>` 存在（详细输出见[独立验证](#独立验证回应自证式验证)）。
 
@@ -336,7 +338,7 @@ RVE 只对能验证的事负责。下表把「不可承诺项」说清：
 <details>
 <summary><strong>导出的时间线能直接导入 Premiere / Resolve 吗？</strong></summary>
 
-FCP7 XML 是主要出口，结构上满足 `xmeml` 契约（交付闸门 S4 全部通过），但**真人用 Premiere / Resolve 真导入实测尚未完成**——这是当前唯一未闭环的验收项。EDL 会丢转场与变速，仅作最小链路验证；OTIO 作为中间层。
+FCP7 XML 是主要出口，结构上满足 `xmeml` 契约（交付闸门 S4 全部通过），但**真人用 Premiere / Resolve 真导入实测尚未完成**——这是当前唯一未闭环的验收项。EDL 不承载变速、滤镜与字幕（转场以 `D`+帧数表达），仅作最小链路验证；OTIO 作为中间层。
 
 </details>
 

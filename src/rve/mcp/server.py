@@ -217,8 +217,9 @@ async def export_timeline(
 
     参数:
         spec_id: 目标 spec id。
-        export_format: 导出格式。fcp7xml=FCP7 XML；edl=CMX EDL；otio=OpenTimelineIO；
-            另有 fcpxml/resolve_xml 等。
+        export_format: 导出格式。仅三种已实现：fcp7xml=FCP7 XML；edl=CMX EDL；
+            otio=OpenTimelineIO（需装 opentimelineio）。fcpxml/resolve_xml 虽在
+            ExportFormat 枚举中，但调用会抛 NotImplementedError，绝不静默产出半成品。
         out_path: 输出文件路径；None=由实现决定默认落盘位置。
         fps_override: 覆盖时间线帧率（仅影响时间码换算）；None=沿用源帧率。
 

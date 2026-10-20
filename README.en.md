@@ -189,7 +189,7 @@ RVE needs Python 3.11/3.12/3.13 plus ffmpeg (including ffprobe). What it can do 
 | Transition (dissolve / fade) detection | Each internal boundary's `cut_type` (`hard`/`dissolve`/`fade`) + transition duration + checkable evidence (peak diff, window baseline, contrast ratio, luminance extremes) | Samples only a ≤1s window around the boundary and never decodes the whole file; insufficient evidence goes into `uncertain[]` — never a silent guess |
 | Single source of truth | `EditSpec` (contiguous, non-overlapping, full tiling; `extra="forbid"`; uncertainty into `uncertain[]`) | See [EditSpec contract](#editspec-contract-single-source-of-truth) |
 | FCP7 XML timeline | `<xmeml>` sequence; video-track `clipitem`s accumulate along the sequence timeline and tile fully | Pure standard library; `export --format fcp7xml` |
-| CMX3600 EDL | One V-track event per shot; record timecode accumulates on the sequence axis | Pure standard library; `export --format edl`; drops transitions/speed |
+| CMX3600 EDL | One V-track event per shot; record timecode accumulates on the sequence axis | Pure standard library; `export --format edl`; transitions as `C`/`D` + frame count; speed/filters/subtitles not carried |
 | OpenTimelineIO | `.otio` intermediate timeline (each clip carries an `ExternalReference` back to the source) | Runtime dependency `opentimelineio` (see `pyproject.toml`); the exporter imports it lazily and exits 2 if missing |
 | Human-readable review report | Self-contained single-file HTML (source / rhythm / shot table / transitions / uncertainty) | `rve report <spec_id>`, always writes to `cwd/reports/` |
 | Agent orchestration | 8 MCP tools + the `editspec://{spec_id}` resource template | Local stdio MCP server |
@@ -211,6 +211,8 @@ Material is a real segment of Tears of Steel (`ffmpeg -ss 100 -t 60 -c copy`, 19
 - **~9.707 cuts per minute** (rhythm curve `slow_build`), shortest shot **1.474s**, no sub-0.5s fragments;
 - **Transition verdicts**: 9 internal boundaries → **7 hard / 2 dissolve / 0 fade** (each carrying evidence: peak diff, window baseline, contrast ratio);
 - **`uncertain == 1`**: the single uncertain item is `shots[9].cut_type` — that dissolve spreads over only 4 frames with confidence 0.42, **explicitly recorded instead of silently guessing a label**.
+
+**On-disk evidence**: the spec's workspace directory holds `spec.json` plus `receipts/` — `receipts/build_edit_spec.json` (this build's receipt and artifact list) and `receipts/transitions.json` (per-boundary evidence for all 9 internal boundaries: peak diff / window baseline / contrast ratio / luminance extremes). Both are offline-checkable files, independent of any transient MCP return.
 
 The exported FCP7 XML, read back by **`scripts/independent_verify.py` (a second implementation that does not import `rve.*`)** → **PASS**: `<xmeml>` version=4, a purely translational timeline (offset ≈ 0 frames across all 10 shots), last clipitem `end=1483` matching `sequence duration=1483`, `<timebase>=24 <ntsc>=FALSE`, **2 `transitionitem`s all strictly straddling their cut points**, an audio track with 10 clipitems, and `<timecode>` present (full output in [Independent verification](#independent-verification)).
 
@@ -337,7 +339,7 @@ No. RVE analyzes locally; only your agent receives the tool results, and your mo
 <details>
 <summary><strong>Can the exported timeline be imported into Premiere / Resolve directly?</strong></summary>
 
-FCP7 XML is the primary output and satisfies the `xmeml` contract (the delivery gate's S4 passes fully), but a **real import into Premiere / Resolve has not yet been performed** — the only unclosed acceptance item today. EDL drops transitions and speed and is only a minimal-path check; OTIO is an intermediate layer.
+FCP7 XML is the primary output and satisfies the `xmeml` contract (the delivery gate's S4 passes fully), but a **real import into Premiere / Resolve has not yet been performed** — the only unclosed acceptance item today. EDL carries no speed, filters or subtitles (transitions appear as `D` + frame count) and is only a minimal-path check; OTIO is an intermediate layer.
 
 </details>
 

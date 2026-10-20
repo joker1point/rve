@@ -13,6 +13,7 @@ PySceneDetect 的切点本就可能落在渐变中段）。
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -233,6 +234,26 @@ def test_build_writes_transitions_and_keeps_invariants(
     # 找不到转场的判定必须以 uncertain[] 显式暴露，绝不静默
     for item in spec.uncertain:
         assert item.field_path and item.reason
+
+    # 回执落盘：兑现"每个 spec 目录含 spec.json 与 receipts/"，且转场**逐条**证据
+    # 在交付物层面可复核（不依赖 MCP 的瞬时返回，避免"证据只存在于内存"）。
+    receipt_dir = tmp_path / "transitions-test" / "receipts"
+    build_receipt = receipt_dir / "build_edit_spec.json"
+    transitions_receipt = receipt_dir / "transitions.json"
+    assert build_receipt.is_file(), "receipts/build_edit_spec.json 未落盘"
+    assert transitions_receipt.is_file(), "receipts/transitions.json 未落盘"
+
+    payload = json.loads(transitions_receipt.read_text(encoding="utf-8"))
+    verdicts = payload["params"]["verdicts"]
+    assert len(verdicts) == len(spec.shots) - 1  # 每条内部边界一条
+    for record in verdicts:
+        for key in ("cut_type", "confidence", "peak_diff", "baseline_diff", "window_sec"):
+            assert key in record, f"边界证据缺 {key}: {record}"
+        assert record["cut_type"] in {t.value for t in CutType}
+
+    # build 回执的产物清单必须包含 spec.json 与两份 receipts
+    artifacts = {Path(a).name for a in json.loads(build_receipt.read_text("utf-8"))["artifacts"]}
+    assert {"spec.json", "build_edit_spec.json", "transitions.json"} <= artifacts
 
 
 @requires_ffmpeg
