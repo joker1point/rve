@@ -28,14 +28,17 @@ _NOT_IMPLEMENTED_HINT = "该能力尚未实现（Phase 2）"
 # --------------------------------------------------------------------------- #
 
 
-def _probe_command(cmd: str) -> str | None:
-    """探测外部命令是否可用；可用时返回其版本行，否则返回 None。"""
+def _probe_command(cmd: str, version_flag: str = "-version") -> str | None:
+    """探测外部命令是否可用；可用时返回其版本行，否则返回 None。
+
+    version_flag 允许不同工具有各自的版本参数（ffmpeg 系用 -version，hypit 用 --version）。
+    """
     exe = shutil.which(cmd)
     if not exe:
         return None
     try:
         proc = subprocess.run(
-            [exe, "-version"],
+            [exe, version_flag],
             capture_output=True,
             text=True,
             timeout=15,
@@ -89,6 +92,18 @@ def _cmd_doctor(_args: argparse.Namespace) -> int:
         detail = _probe_command(cmd)
         results.append((cmd, detail is not None, detail or "未找到可执行文件", advice))
 
+    # 可选的第三切镜引擎：hypit（npm 全局包 @hypit/hypit）
+    # 缺失只报告、不失败（doctor 是体检报告）；真要用它时 analyze 会显式报错并给安装提示。
+    hypit_detail = _probe_command("hypit", "--version")
+    results.append(
+        (
+            "hypit (可选第三切镜引擎)",
+            hypit_detail is not None,
+            hypit_detail or "未找到可执行文件",
+            "安装 hypit（npm i -g @hypit/hypit）以启用可选的第三切镜引擎",
+        )
+    )
+
     # Python 依赖
     for module, label, advice in (
         (
@@ -140,7 +155,9 @@ async def _cmd_analyze(args: argparse.Namespace) -> int:
 
     engine = DetectEngine(args.engine)
     probe = await probe_video(args.video)
-    shots = await detect_shots(args.video, engine, None, 0.0, None)
+    shots = await detect_shots(
+        args.video, engine, None, 0.0, None, extra_engines=args.extra_engine or None
+    )
 
     # Phase 0：audio 能力未实现，按约定传空实例（不调用 analyze_audio）
     audio = AudioAnalysisResult(receipt=ToolReceipt(tool="noop"))
@@ -271,7 +288,16 @@ def build_parser() -> argparse.ArgumentParser:
     """构建 CLI 参数解析器（子命令：doctor/analyze/export/report/specs/showcase）。"""
     parser = argparse.ArgumentParser(
         prog="rve",
-        description="RVE — 从成片逆向还原可导入 NLE 的编辑时间线。",
+        description="RVE — 从成片逆向还原出可导入 NLE 的编辑时间线。",
+        # RawDescription：epilog 原样输出，避免长示例被折行拆断
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "示例:\n"
+            "  rve analyze <video> --engine hypit"
+            "            # 只用 hypit 切镜（需本机已装 @hypit/hypit）\n"
+            "  rve analyze <video> --extra-engine hypit"
+            "       # content+adaptive+hypit 三方交叉验证"
+        ),
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -286,9 +312,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_analyze.add_argument("--out", default=None, help="产物输出目录")
     p_analyze.add_argument(
         "--engine",
-        choices=["auto", "content", "adaptive"],
+        choices=["auto", "content", "adaptive", "hypit"],
         default="auto",
-        help="切镜引擎（默认 auto）",
+        help="切镜引擎（默认 auto）。hypit 是可选外部引擎，本机未装 hypit 时会显式报错",
+    )
+    p_analyze.add_argument(
+        "--extra-engine",
+        action="append",
+        choices=["hypit"],
+        default=None,
+        help=(
+            "额外参与交叉验证的可选外部引擎（可重复传入）。"
+            "hypit 为可选依赖，本机未安装时会显式报错并给出安装提示，绝不静默回退"
+        ),
     )
     p_analyze.set_defaults(handler=_cmd_analyze)
 

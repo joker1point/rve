@@ -172,7 +172,7 @@ RVE 照 REA 的分层组织，三层各司其职：
 |---|---|---|
 | **工作区 / 证据目录** | 每个 spec 一个目录，内 `spec.json` 与 `receipts/`；根目录由 `RVE_WORKSPACES` 指定 | `src/rve/workspace.py` |
 | **会话路由** | 把「探测 → 切镜 → 组装 → 导出」暴露成 10 个 MCP 工具与 6 个 CLI 子命令 | `src/rve/mcp/server.py`、`src/rve/cli.py` |
-| **Provider 注册表** | 可替换后端：探针（`FfprobeProvider`）与切镜（`PySceneDetectShotDetector`），以 `Protocol` 声明契约 | `src/rve/providers/` |
+| **Provider 注册表** | 可替换后端：探针（`FfprobeProvider`）与切镜（`PySceneDetectShotDetector`，可选的 `HypitBoundaryDetector`），以 `Protocol` 声明契约 | `src/rve/providers/` |
 
 **不 vendor 任何上游源码**：RVE **不包含**、也不复制 FFmpeg、PySceneDetect、OpenTimelineIO 的任何源码。上游工具一律以**薄适配器**封装：
 
@@ -190,6 +190,7 @@ RVE 需要 Python 3.11/3.12/3.13，外加 ffmpeg（含 ffprobe）。能做什么
 | --- | --- | --- |
 | 本地成片 | 时长/帧率/分辨率/编码/音轨的源信息（`VideoSource` + receipt） | 本机 ffprobe；`rve doctor` 自检 |
 | 硬切镜头边界 | 镜头列表（秒锚定 `in_sec`/`out_sec`）、`CutType` 初判、双引擎分歧 `disagreements` | PySceneDetect；`analyze --engine {auto,content,adaptive}` |
+| 变化强度证据（可选第三引擎） | 每处切点的**变化强度分数** + 渐变区「密集低分簇」形态；可与 content+adaptive 做**三方交叉**，分歧显式登记 | 需自行安装 npm 包 `@hypit/hypit`；`analyze --engine hypit` 或 `--extra-engine hypit` |
 | 转场（溶解 / 淡入淡出）识别 | 每条内部边界的 `cut_type`（`hard`/`dissolve`/`fade`）+ 渐变时长 + 可复核证据（峰值差、基线、信噪比、亮度极值） | 只采边界附近 ≤1s 窗口、不解码整片；证据不足进 `uncertain[]`，绝不静默猜 |
 | 唯一权威结构 | `EditSpec`（连续无重叠铺满、`extra="forbid"`、存疑进 `uncertain[]`） | 见 [EditSpec 契约](#editspec-契约唯一权威结构) |
 | FCP7 XML 时间线 | `<xmeml>` 序列，video 轨 `clipitem` 按序列时间轴累积铺满 | 纯标准库；`export --format fcp7xml` |
@@ -233,18 +234,18 @@ rve export <spec_id> --format edl
 rve export <spec_id> --format otio
 ```
 
-### 交付闸门：13/13 PASS
+### 交付闸门：14/14 PASS
 
-`python scripts/acceptance.py` 是交付验收入口，逐阶段打印 PASS/FAIL，末行输出 `RESULT: PASS|FAIL`，全过才 exit 0。十三个阶段：S0 预检 / S1 宿主单测 / S2 构建 wheel + 全新 venv 安装 + `rve --help`/`doctor` / **S2b 全新 venv 内单测** / S3 密闭端到端 `analyze` / S4 FCP7 XML 契约断言 / S5 EDL+OTIO+往返 / S6 MCP 面 / S7 开源卫生 / S8 包名闸门 / **S9 独立校验（不 import `rve` 的第二实现回读 FCP7 XML）** / **S10 案例库（全新 venv 内 `rve showcase list` + 跑通程序合成案例）** / **S11 模拟真人导入（真值素材 + 独立解析器回读比对）**。
+`python scripts/acceptance.py` 是交付验收入口，逐阶段打印 PASS/FAIL，末行输出 `RESULT: PASS|FAIL`，全过才 exit 0。十四个阶段：S0 预检 / S1 宿主单测 / S2 构建 wheel + 全新 venv 安装 + `rve --help`/`doctor` / **S2b 全新 venv 内单测** / S3 密闭端到端 `analyze` / S4 FCP7 XML 契约断言 / S5 EDL+OTIO+往返 / S6 MCP 面 / S7 开源卫生 / S8 包名闸门 / **S9 独立校验（不 import `rve` 的第二实现回读 FCP7 XML）** / **S10 案例库（全新 venv 内 `rve showcase list` + 跑通程序合成案例）** / **S11 模拟真人导入（真值素材 + 独立解析器回读比对）** / **S12 可选切镜引擎 hypit（装了必须跑通，没装明确报告）**。
 
 最近一次本机实跑：
 
 ```text
-通过 13 / 失败 0 / 跳过 0
+通过 14 / 失败 0 / 跳过 0
 RESULT: PASS
 ```
 
-其中 S1 宿主单测与 S2b 全新 venv 内单测均为 `passed=125 skipped=0 failed=0 errors=0`（宿主与全新环境依赖齐备，OTIO 用例全部执行；宿主若未装 `opentimelineio`，那几条 OTIO 用例按约定 skip 而非报错），S9 独立校验器退出码 `0`、裁决 `PASS`，S10 在全新 venv 内 `rve showcase list` 命中全部 4 个案例 id 并跑通程序合成案例，S11 模拟真人导入 9/9 通过（时间线总长 216 帧 = 7.200s、3 处硬切全部命中、2 处转场落在设计窗口内、6 个片段素材全部在线）。
+其中 S1 宿主单测与 S2b 全新 venv 内单测均为 `passed=164 skipped=0 failed=0 errors=0`（宿主与全新环境依赖齐备，OTIO 用例全部执行；宿主若未装 `opentimelineio`，那几条 OTIO 用例按约定 skip 而非报错），S9 独立校验器退出码 `0`、裁决 `PASS`，S10 在全新 venv 内 `rve showcase list` 命中全部 4 个案例 id 并跑通程序合成案例，S11 模拟真人导入 9/9 通过（时间线总长 216 帧 = 7.200s、3 处硬切全部命中、2 处转场落在设计窗口内、6 个片段素材全部在线），S12 在全新 venv 内跑通 `--engine hypit`（未装 hypit 的机器上该阶段明确报告"可选依赖缺席"并 PASS）。
 
 > **S9 为什么必须单列**：S4 的 FCP7 契约断言由**写 XML 的同一份代码**执行，属**自证**——导出器与断言共享同一个错误假设时，闸门照绿。S9 换用一个不 import `rve.*` 的第二实现（`scripts/independent_verify.py`），从第一性原理重建时间轴再比对，专挡这类系统性盲区。详见[独立验证](#独立验证回应自证式验证)。
 
@@ -370,6 +371,7 @@ RVE 只对能验证的事负责。下表把「不可承诺项」说清：
 | 能力 | 现状 |
 |---|---|
 | 硬切镜头边界 | ✅ 已实现（`content`/`adaptive` 双引擎交叉验证，分歧显式写入） |
+| 第三切镜引擎 hypit（可选） | ⚠️ **可选外部工具**：需自行安装 npm 包 `@hypit/hypit`（本项目不捆绑、不 vendor、不进 `pyproject` 依赖，只在 `rve doctor` 里探测 PATH）。它给的是**机械变化候选 + 强度分数**（自述"从不给剪辑级镜头标签"），用于三方交叉验证。已知边界：① 分数尺度与 PySceneDetect 不同（实测硬切 0.38~0.50），故"置信度偏低"告警会更多，属预期；② 其 `media frames`/`tiles` 需 ffmpeg ≥5.1（用到 `fps_mode` 选项），本项目最低支持 ffmpeg 4.3.1，故那两条命令在低版本 ffmpeg 上不可用；③ 交叉验证语义下，hypit 会在渐变区**不切**，由此产生的引擎分歧被显式登记而非抹平 |
 | 转场（溶解/淡入淡出）识别 | ⚠️ **检测侧已实现**（`dissolve`/`fade`，只采边界附近 ≤1s 窗口，逐条给证据与置信度），单测覆盖；**导出侧**写 `<transitionitem>` 且严格跨骑剪切点。真实素材仍会有**证据偏弱**的边界（Tears of Steel 片段 9 条边界 → 1 条进 `uncertain`）；`effectid`/`effectcategory` 取值与**导入正确性仍需真人实测** |
 | **NLE 导入闭环** | ⚠️ **唯一未闭环验收项**：Premiere / Resolve **真导入并还原时间线尚未实测**；"生成了文件"不等于通过。已加 S9 独立校验与 9 份真实 NLE 产物对标（见[独立验证](#独立验证回应自证式验证)），但它们验的是**结构**，不是 NLE 的实际接受度 |
 | 音轨还原 | ⚠️ 部分：**FCP7 导出已输出带真实 `<file>` 的逐镜音频轨**（Tears of Steel 片段 → 10 个 audio clipitem，随 `has_audio` 出现/消失）；但 **OTIO 音频轨仍为空轨**，音频与视频的 `<link>` 互链未写，逐镜音频**分析**（`analyze_audio`）仍未实现 |
@@ -450,7 +452,7 @@ rve analyze path/to/final_cut.mp4 --out out/
 
 - [调研分析报告](docs/RVE-逆向剪辑调研分析报告.md)：为什么收敛为 C 型，以及差异化定位。
 - [贡献指南](CONTRIBUTING.md)：开发环境、跑测试、提 PR 的顺序与硬性约定。
-- [交付验收](scripts/acceptance.py)：十三阶段交付闸门，末行 `RESULT: PASS|FAIL`。
+- [交付验收](scripts/acceptance.py)：十四阶段交付闸门，末行 `RESULT: PASS|FAIL`。
 - [独立校验器](scripts/independent_verify.py) 与 [真实 NLE 产物对标发现](scripts/independent_verify_findings.md)：不 import `rve` 的第二实现，以及 9 份真实样本的结构差异清单。
 - [CI](.github/workflows/ci.yml)：ubuntu-latest，Python 3.11/3.12/3.13 矩阵。
 - [EditSpec 契约](#editspec-契约唯一权威结构) 与 [导出格式](#导出格式)：结构不变量与各格式状态。

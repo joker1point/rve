@@ -49,11 +49,12 @@ class _Boundary:
 @dataclass
 class _DetectorRun:
     """一次单引擎检测的原始产物。"""
-
     kind: str
     duration_sec: float
     fps: float
     boundaries: list[tuple[float, float]] = field(default_factory=list)
+    # 该引擎自身的告警（如被排除的渐变区密集簇）——由上层汇总进 receipt
+    warnings: list[str] = field(default_factory=list)
 
 
 def _normalize_score(raw: float | None, base: float) -> float:
@@ -135,6 +136,24 @@ def _run_detector(
 
 def _single_engine_boundaries(run: _DetectorRun) -> list[_Boundary]:
     return [_Boundary(sec=sec, score=score) for sec, score in run.boundaries]
+
+
+def run_pyscenedetect(
+    path: str,
+    kind: str,
+    threshold: float | None = None,
+    start_sec: float = 0.0,
+    end_sec: float | None = None,
+) -> _DetectorRun:
+    """公开入口：跑一次单引擎检测（content|adaptive），返回内部 run 结构。
+
+    存在的理由：**交叉验证属于编排职责，不该藏在单个 Provider 的实现里**。
+    pipeline 层要拿 content / adaptive / 其它引擎的原始切点做 N 路聚类，
+    就需要能单独调用某一个引擎；本函数是那层需要的最小接口。
+    """
+    if kind not in ("content", "adaptive"):
+        raise ValueError(f"未知引擎: {kind}（仅支持 content / adaptive）")
+    return _run_detector(path, kind, threshold, start_sec, end_sec)
 
 
 def _cross_validate(content: _DetectorRun, adaptive: _DetectorRun) -> list[_Boundary]:

@@ -173,7 +173,7 @@ RVE mirrors REA's layered organization — three layers, each with one job:
 |---|---|---|
 | **Workspace / evidence** | One directory per spec, holding `spec.json` and `receipts/`; root set by `RVE_WORKSPACES` | `src/rve/workspace.py` |
 | **Session routing** | Exposes "probe → detect → build → export" as 10 MCP tools and 6 CLI subcommands | `src/rve/mcp/server.py`, `src/rve/cli.py` |
-| **Provider registry** | Swappable backends: probe (`FfprobeProvider`) and shot detection (`PySceneDetectShotDetector`), declared by `Protocol` | `src/rve/providers/` |
+| **Provider registry** | Swappable backends: probe (`FfprobeProvider`) and shot detection (`PySceneDetectShotDetector`, plus the optional `HypitBoundaryDetector`), declared by `Protocol` | `src/rve/providers/` |
 
 **No vendored upstream source**: RVE does **not** contain or copy any source from FFmpeg, PySceneDetect or OpenTimelineIO. Upstream tools are wrapped as **thin adapters**:
 
@@ -191,6 +191,7 @@ RVE needs Python 3.11/3.12/3.13 plus ffmpeg (including ffprobe). What it can do 
 | --- | --- | --- |
 | Local finished render | Source info (duration / fps / resolution / codec / audio) as a `VideoSource` + receipt | Local ffprobe; check with `rve doctor` |
 | Hard-cut boundaries | Shot list (second-anchored `in_sec`/`out_sec`), initial `CutType`, dual-engine `disagreements` | PySceneDetect; `analyze --engine {auto,content,adaptive}` |
+| Change-strength evidence (optional third engine) | The **change-strength score** at every cut plus the "dense low-score cluster" shape of a gradient; can join content+adaptive for a **three-way cross-check** with disagreements registered explicitly | Install the npm package `@hypit/hypit` yourself; `analyze --engine hypit` or `--extra-engine hypit` |
 | Transition (dissolve / fade) detection | Each internal boundary's `cut_type` (`hard`/`dissolve`/`fade`) + transition duration + checkable evidence (peak diff, window baseline, contrast ratio, luminance extremes) | Samples only a ≤1s window around the boundary and never decodes the whole file; insufficient evidence goes into `uncertain[]` — never a silent guess |
 | Single source of truth | `EditSpec` (contiguous, non-overlapping, full tiling; `extra="forbid"`; uncertainty into `uncertain[]`) | See [EditSpec contract](#editspec-contract-single-source-of-truth) |
 | FCP7 XML timeline | `<xmeml>` sequence; video-track `clipitem`s accumulate along the sequence timeline and tile fully | Pure standard library; `export --format fcp7xml` |
@@ -234,18 +235,18 @@ rve export <spec_id> --format edl
 rve export <spec_id> --format otio
 ```
 
-### Delivery gate: 13/13 PASS
+### Delivery gate: 14/14 PASS
 
-`python scripts/acceptance.py` is the delivery gate. It prints PASS/FAIL per stage, ends with `RESULT: PASS|FAIL`, and only exits 0 when everything passes. Thirteen stages: S0 preflight / S1 host tests / S2 build wheel + install into a fresh venv + `rve --help`/`doctor` / **S2b tests inside the fresh venv** / S3 hermetic end-to-end `analyze` / S4 FCP7 XML contract assertion / S5 EDL+OTIO+round-trip / S6 MCP surface / S7 open-source hygiene / S8 package-name gate / **S9 independent check (a second implementation that does not import `rve` reads the FCP7 XML back)** / **S10 showcase library (`rve showcase list` + one synthetic case, inside the fresh venv)** / **S11 simulated human import (ground-truth material + independent parser reads the XML back)**.
+`python scripts/acceptance.py` is the delivery gate. It prints PASS/FAIL per stage, ends with `RESULT: PASS|FAIL`, and only exits 0 when everything passes. Fourteen stages: S0 preflight / S1 host tests / S2 build wheel + install into a fresh venv + `rve --help`/`doctor` / **S2b tests inside the fresh venv** / S3 hermetic end-to-end `analyze` / S4 FCP7 XML contract assertion / S5 EDL+OTIO+round-trip / S6 MCP surface / S7 open-source hygiene / S8 package-name gate / **S9 independent check (a second implementation that does not import `rve` reads the FCP7 XML back)** / **S10 showcase library (`rve showcase list` + one synthetic case, inside the fresh venv)** / **S11 simulated human import (ground-truth material + independent parser reads the XML back)** / **S12 optional cut engine hypit (must run when installed, explicitly reported when absent)**.
 
 Most recent local run:
 
 ```text
-通过 13 / 失败 0 / 跳过 0
+通过 14 / 失败 0 / 跳过 0
 RESULT: PASS
 ```
 
-where both the S1 host tests and the S2b tests inside the fresh venv reported `passed=125 skipped=0 failed=0 errors=0` (every dependency is present, so the OTIO cases all run; on a host without `opentimelineio` those cases are skipped by convention rather than failing), S9's independent verifier exited `0` with verdict `PASS`, S10 listed all 4 case ids and ran a synthetic case inside the fresh venv, and S11's simulated import passed 9/9 (216 frames = 7.200s total, all 3 hard cuts hit, both transitions inside their designed windows, all 6 clips' media online).
+where both the S1 host tests and the S2b tests inside the fresh venv reported `passed=164 skipped=0 failed=0 errors=0` (every dependency is present, so the OTIO cases all run; on a host without `opentimelineio` those cases are skipped by convention rather than failing), S9's independent verifier exited `0` with verdict `PASS`, S10 listed all 4 case ids and ran a synthetic case inside the fresh venv, S11's simulated import passed 9/9 (216 frames = 7.200s total, all 3 hard cuts hit, both transitions inside their designed windows, all 6 clips' media online), and S12 ran `--engine hypit` inside the fresh venv (on a machine without hypit that stage explicitly reports "optional dependency absent" and passes).
 
 > **Why S9 deserves its own stage**: S4's FCP7 contract assertions are executed by **the very same code that writes the XML** — that is self-verification, so the gate stays green even if the exporter and the assertions share the same wrong assumption. S9 swaps in a second implementation (`scripts/independent_verify.py`) that does not import `rve.*`, rebuilds the timeline from first principles, and compares — blocking exactly this class of systemic blind spot. See [Independent verification](#independent-verification).
 
@@ -371,6 +372,7 @@ RVE only stands behind what it can verify. The table below spells out what it do
 | Capability | Status |
 |---|---|
 | Hard-cut boundaries | ✅ Implemented (`content`/`adaptive` dual-engine cross-check; disagreements are explicit) |
+| Third cut engine hypit (optional) | ⚠️ **Optional external tool**: you install the npm package `@hypit/hypit` yourself (this project neither bundles nor vendors it, and keeps it out of the `pyproject` dependencies — it is probed on `PATH` by `rve doctor`). It yields **mechanical change candidates + strength scores** (it states it "never [gives] editorial shot labels"), used for three-way cross-checks. Known limits: ① its score scale differs from PySceneDetect's (measured hard cuts at 0.38~0.50), so "low boundary confidence" warnings appear more often — that is expected; ② its `media frames`/`tiles` need ffmpeg ≥5.1 (they use the `fps_mode` option) while this project supports ffmpeg 4.3.1, so those two commands are unavailable on older ffmpeg; ③ under cross-check semantics hypit does **not** cut inside a gradient, and the resulting engine disagreement is registered explicitly rather than smoothed away |
 | Transition (dissolve / fade) detection | ⚠️ **Detection side implemented** (`dissolve`/`fade`, sampling only a ≤1s window around the boundary, with evidence and confidence per verdict) and covered by tests; on the **export side** it writes `<transitionitem>` strictly straddling the cut point. Real material still yields boundaries with **weak evidence** (the Tears of Steel segment: 9 boundaries → 1 in `uncertain`); the `effectid`/`effectcategory` values and **import correctness still need real-world testing** |
 | **NLE import closure** | ⚠️ **The only unclosed acceptance item**: a real import into Premiere / Resolve **has not been tested**; "a file was produced" is not the same as passing. S9's independent check and the 9-sample real-NLE benchmark (see [Independent verification](#independent-verification)) verify **structure**, not an NLE's actual acceptance |
 | Audio-track recovery | ⚠️ Partial: the **FCP7 exporter now writes a real per-shot audio track with `<file>`** (Tears of Steel segment → 10 audio clipitems, appearing/disappearing with `has_audio`); but the **OTIO audio track is still empty**, the audio↔video `<link>` cross-link is not written, and per-shot audio **analysis** (`analyze_audio`) is still not implemented |
@@ -451,7 +453,7 @@ Start inside the repository:
 
 - [Research report](docs/RVE-逆向剪辑调研分析报告.md): why the project converged on type C and how it is positioned (Chinese).
 - [Contributing](CONTRIBUTING.md): development setup, tests, PR order and hard rules (Chinese).
-- [Delivery gate](scripts/acceptance.py): the thirteen-stage gate, ending with `RESULT: PASS|FAIL`.
+- [Delivery gate](scripts/acceptance.py): the fourteen-stage gate, ending with `RESULT: PASS|FAIL`.
 - [Independent verifier](scripts/independent_verify.py) and [real-NLE benchmark findings](scripts/independent_verify_findings.md): a second implementation that does not import `rve`, plus the structural-difference list over 9 real samples.
 - [CI](.github/workflows/ci.yml): ubuntu-latest, Python 3.11/3.12/3.13 matrix.
 - [EditSpec contract](#editspec-contract-single-source-of-truth) and [Export formats](#export-formats): structural invariants and per-format status.

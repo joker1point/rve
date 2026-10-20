@@ -1127,6 +1127,56 @@ def stage_s11_simulated_nle_import(ctx: Context) -> tuple[str, list[str]]:
     return PASS, detail
 
 
+def stage_s12_optional_hypit(ctx: Context) -> tuple[str, list[str]]:
+    """S12 可选切镜引擎 hypit：装了必须真跑通，没装必须明确报告。
+
+    为什么单列：hypit 是**可选外部工具**（npm 全局包 @hypit/hypit），不是 pip
+    依赖——本项目不 vendor 它，也不把它写进 pyproject 的 dependencies（与 ffmpeg
+    同级，在 doctor 里探测）。它的正确性要由两条守住：
+    ① 装了就必须真的能跑（`--engine hypit` 必须出产物，**不许静默回退**到别的引擎）；
+    ② 没装必须**明确报告**（用户要知道这个能力存在、需要自己装），而不是让闸门
+       假装它不存在。
+
+    故本阶段在「没装」时记 PASS 并写明原因——可选依赖缺席不是缺陷。
+    """
+    detail: list[str] = []
+    exe = shutil.which("hypit")
+    if exe is None:
+        detail.append("本机未安装 hypit（可选外部切镜引擎，npm 包 @hypit/hypit）")
+        detail.append(
+            "安装后可用 `rve analyze --engine hypit` / `--extra-engine hypit` 启用；"
+            "未安装时其余引擎与能力不受影响"
+        )
+        return PASS, detail
+    detail.append(f"检测到 hypit: {exe}")
+    if ctx.venv_py is None:
+        return FAIL, ["S2 未建立 venv，无法在真交付形态下验证 hypit 引擎"]
+    s12 = ctx.tmp / "s12"
+    out_dir = s12 / "out"
+    ws = s12 / "ws"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ws.mkdir(parents=True, exist_ok=True)
+    material = REPO_ROOT / "tests" / "data" / "synth_cut.mp4"
+    if not material.is_file():
+        return FAIL, [f"缺测试素材: {material}"]
+    rve_cmd = [ctx.venv_rve] if ctx.venv_rve else [ctx.venv_py, "-m", "rve.cli"]
+    rc, out, err = _run(
+        rve_cmd + ["analyze", str(material), "--engine", "hypit", "--out", str(out_dir)],
+        cwd=REPO_ROOT,
+        env=_venv_env(ws),
+        timeout=900,
+    )
+    detail.append(f"`rve analyze --engine hypit` 退出码: {rc}")
+    if rc != 0:
+        return FAIL, detail + [f"hypit 引擎执行失败: {(out + err).strip()[-500:]}"]
+    xmls = sorted(out_dir.glob("*.fcp7xml.xml"))
+    if not xmls:
+        return FAIL, detail + [f"hypit 引擎未产出 FCP7 XML（{out_dir}）"]
+    detail.append(f"产出: {xmls[0].name}")
+    detail.append("可选外部切镜引擎 hypit 在真交付形态下可用")
+    return PASS, detail
+
+
 STAGES: list[tuple[str, str, StageFn]] = [
     ("S0", "预检（Python>=3.11 + 仓库布局）", stage_s0_preflight),
     ("S1", "单测套件（pytest -q，exit 0 且 0 failed/errors）", stage_s1_tests),
@@ -1141,6 +1191,7 @@ STAGES: list[tuple[str, str, StageFn]] = [
     ("S9", "独立校验（不 import rve 的第二实现回读 FCP7 XML）", stage_s9_independent_verify),
     ("S10", "案例库（showcase list + 跑通程序合成案例）", stage_s10_showcases),
     ("S11", "模拟真人导入（真值素材 + 独立解析器回读比对）", stage_s11_simulated_nle_import),
+    ("S12", "可选切镜引擎 hypit（装了必须跑通，没装明确报告）", stage_s12_optional_hypit),
 ]
 
 

@@ -69,27 +69,42 @@ async def detect_shots(
     threshold: float | None = None,
     start_sec: float = 0.0,
     end_sec: float | None = None,
+    extra_engines: list[str] | None = None,
 ) -> ShotDetectionResult:
-    """检测镜头边界，产出镜头列表与双引擎分歧。
+    """检测镜头边界，产出镜头列表与多引擎分歧。
 
     做什么:
         返回镜头切点、每个镜头的 CutType 初判，以及多引擎之间的分歧。
-        双引擎结论一致处采信；分歧处不会静默取其一，而是显式写入 disagreements。
+        多引擎结论一致处采信；分歧处不会静默取其一，而是显式写入 disagreements。
+        默认（auto + 无 extra_engines）是 content+adaptive 双引擎交叉；
+        传入 engine="hypit" 则改用 hypit 的机械变化候选；
+        传入 extra_engines=["hypit"] 则是 content+adaptive+hypit 三方交叉。
 
     参数:
         path: 视频文件路径。
-        engine: 切镜引擎。auto=按内容自适应选择；content=纯内容检测；adaptive=自适应阈值。
+        engine: 切镜引擎。auto=按内容自适应选择；content=纯内容检测；adaptive=自适应阈值；
+            hypit=可选外部引擎（用 hypit 的机械变化候选，需本机已装 @hypit/hypit）。
         threshold: 边界判定阈值；None 表示交由引擎自定。
         start_sec: 分析起始时间（秒）。
         end_sec: 分析结束时间（秒）；None 表示分析到视频末尾。
+        extra_engines: 额外参与交叉验证的引擎名列表（如 ["hypit"]）；
+            None 表示不追加（行为与只跑 content+adaptive 完全一致）。
 
     失败时会怎样:
         - 引擎不可用或参数非法（如 start_sec 为负）-> 抛异常。
+        - engine="hypit" 或 extra_engines 含 "hypit" 但本机未安装 hypit ->
+          抛异常并给出安装提示，**绝不静默回退到别的引擎**。
         - 分歧不会被吞掉：会进入 disagreements，等待人工或下游复核。
+
+    边界:
+        hypit 只提供**机械的相邻帧变化候选**（它自己明确声明不做剪辑级镜头标签）；
+        剪辑级转场语义（硬切/叠化/淡入淡出等）仍由后续阶段判定。
     """
     from rve.pipeline.detect import detect_shots as _detect_shots
 
-    return await _detect_shots(path, engine, threshold, start_sec, end_sec)
+    return await _detect_shots(
+        path, engine, threshold, start_sec, end_sec, extra_engines=extra_engines
+    )
 
 
 async def analyze_audio(

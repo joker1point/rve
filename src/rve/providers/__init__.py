@@ -4,6 +4,12 @@ from __future__ import annotations
 
 from .base import ProbeProvider, ShotDetector
 from .ffprobe import FfprobeError, FfprobeProvider, parse_ffprobe_output, run_ffprobe
+from .shots_hypit import (
+    HypitBoundaryDetector,
+    HypitCandidate,
+    HypitCluster,
+    HypitRun,
+)
 from .shots_pyscenedetect import PySceneDetectShotDetector
 
 __all__ = [
@@ -14,4 +20,8 @@ __all__ = [
     "run_ffprobe",
     "parse_ffprobe_output",
     "PySceneDetectShotDetector",
+    "HypitBoundaryDetector",
+    "HypitCandidate",
+    "HypitCluster",
+    "HypitRun",
 ]

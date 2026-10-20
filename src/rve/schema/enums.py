@@ -74,6 +74,8 @@ class DetectEngine(StrEnum):
     CONTENT = "content"
     ADAPTIVE = "adaptive"
     TRANSNET = "transnet"
+    # 可选外部引擎：本机 npm 全局包 @hypit/hypit 提供的机械变化候选（需自行安装）
+    HYPIT = "hypit"
 
 
 class VlmProvider(StrEnum):
