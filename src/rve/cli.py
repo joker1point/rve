@@ -2,7 +2,7 @@
 
 设计要点：
 - 与 MCP 工具面共用同一套 pipeline 能力，一条命令装好后既能被 Agent 调用、也能手跑。
-- pipeline/workspace 兄弟模块全部延迟导入：本模块必须始终可 import，
+- pipeline/workspace/showcases 兄弟模块全部延迟导入：本模块必须始终可 import，
   `rve doctor` 即使依赖全缺也要正常退出（退出码 0，只报告结果）。
 - 报错不吞：NotImplementedError -> 退出码 2（人话提示）；其他异常 -> 退出码 1。
   绝不 quietly succeed —— 失败必须可见。
@@ -206,12 +206,69 @@ async def _cmd_specs(_args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------- #
+# showcase（案例库）
+# --------------------------------------------------------------------------- #
+
+
+async def _cmd_showcase_list(_args: argparse.Namespace) -> int:
+    """列出案例库中的全部案例：id / 标题 / 类型 / 是否需要外部素材。"""
+    from rve.showcases.registry import list_cases_with_warnings
+
+    cases, warnings = list_cases_with_warnings()
+    for warning in warnings:
+        print(f"[WARN] {warning}", file=sys.stderr)
+
+    if not cases:
+        print("（案例库为空：没有可运行的案例）")
+        return 0
+
+    print(f"共 {len(cases)} 个案例：")
+    print("-" * 72)
+    for case in cases:
+        kind = case.material.kind
+        needs_external = "是" if kind == "external" else "否"
+        print(
+            f"{case.id:<20} {case.title:<26} "
+            f"类型={kind:<10} 需要外部素材={needs_external}"
+        )
+    return 0
+
+
+async def _cmd_showcase_run(args: argparse.Namespace) -> int:
+    """跑一个案例：逐项打印「期望 vs 实际」，末尾给结论与退出码。"""
+    from rve.showcases.runner import run_case
+
+    workdir = Path(args.workdir) if args.workdir else None
+    result = await run_case(
+        args.case_id, workdir=workdir, material_override=args.material
+    )
+
+    print(f"案例: {result.case_id}")
+    print("-" * 72)
+    for check in result.checks:
+        mark = "OK  " if check.passed else "FAIL"
+        print(f"[{mark}] {check.name}: 期望 {check.expected} / 实际 {check.actual}")
+    for artifact in result.artifacts:
+        print(f"产物: {artifact}")
+
+    # 素材缺失：把「怎么准备」打到 stderr，退出码 2（区别于校验不通过的 1）
+    if result.status == "material_missing":
+        print(result.message, file=sys.stderr)
+        return 2
+    if not result.ok:
+        print(result.message, file=sys.stderr)
+        return 1
+    print(result.message)
+    return 0
+
+
+# --------------------------------------------------------------------------- #
 # 分发与入口
 # --------------------------------------------------------------------------- #
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """构建 CLI 参数解析器（子命令：doctor/analyze/export/report/specs）。"""
+    """构建 CLI 参数解析器（子命令：doctor/analyze/export/report/specs/showcase）。"""
     parser = argparse.ArgumentParser(
         prog="rve",
         description="RVE — 从成片逆向还原可导入 NLE 的编辑时间线。",
@@ -259,6 +316,25 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_specs = sub.add_parser("specs", help="列出工作区已有的 spec_id")
     p_specs.set_defaults(handler=_cmd_specs)
+
+    # showcase：案例库（一级子命令 + 二级动作 list / run）
+    p_showcase = sub.add_parser(
+        "showcase", help="案例库：列出/运行可复现的案例配方"
+    )
+    showcase_sub = p_showcase.add_subparsers(dest="showcase_action", required=True)
+
+    p_sc_list = showcase_sub.add_parser("list", help="列出全部案例")
+    p_sc_list.set_defaults(handler=_cmd_showcase_list)
+
+    p_sc_run = showcase_sub.add_parser("run", help="跑一个案例并逐项校验期望指标")
+    p_sc_run.add_argument("case_id", help="目标案例 id")
+    p_sc_run.add_argument(
+        "--workdir", default=None, help="运行产物目录（默认系统临时目录）"
+    )
+    p_sc_run.add_argument(
+        "--material", default=None, help="外部素材的本地文件路径"
+    )
+    p_sc_run.set_defaults(handler=_cmd_showcase_run)
 
     return parser
 

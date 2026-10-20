@@ -746,6 +746,8 @@ def stage_s6_mcp(ctx: Context) -> tuple[str, list[str]]:
         "get_edit_spec",
         "export_timeline",
         "render_report",
+        "list_showcases",
+        "run_showcase",
     }
     probe = ctx.tmp / "s6" / "mcp_probe.py"
     probe.parent.mkdir(parents=True, exist_ok=True)
@@ -777,10 +779,25 @@ def stage_s6_mcp(ctx: Context) -> tuple[str, list[str]]:
             continue
         if schema.get("type") != "object":
             problems.append(f"工具 {name} 的 input schema type != 'object'（{schema.get('type')!r}）")
-        if not isinstance(schema.get("properties"), dict):
+        properties = schema.get("properties")
+        if not isinstance(properties, dict):
             problems.append(f"工具 {name} 的 input schema 缺 properties")
-        if "required" not in schema:
-            problems.append(f"工具 {name} 的 input schema 缺 required 字段")
+            continue
+        # `required` 按 JSON Schema 语义是可选的：无必填参数时 pydantic 不会输出它。
+        # 故只在"本该有必填参数却没登记"时报错 —— 既不放过漏登记，也不误伤无参工具。
+        required = schema.get("required")
+        if required is None:
+            mandatory = [
+                key
+                for key, spec in properties.items()
+                if isinstance(spec, dict) and "default" not in spec
+            ]
+            if mandatory:
+                problems.append(
+                    f"工具 {name} 的 input schema 缺 required 字段（但有必填参数 {mandatory}）"
+                )
+        elif not isinstance(required, list):
+            problems.append(f"工具 {name} 的 input schema 的 required 非 list")
     detail.append("每个期望工具都有合法 input schema" if not problems else "schema 校验存在问题")
 
     if "editspec://{spec_id}" not in templates:
@@ -899,6 +916,132 @@ def stage_s9_independent_verify(ctx: Context) -> tuple[str, list[str]]:
     return PASS, detail
 
 
+# 案例库（showcases）里已知的案例 id：程序合成的可零依赖跑，外部素材的需自备。
+SHOWCASE_CASES_DIR = REPO_ROOT / "src" / "rve" / "showcases" / "cases"
+# 至少要有这么多个 case.json —— 案例库只有一两条就不成其为"库"
+MIN_SHOWCASE_CASES = 3
+
+
+def _case_payloads() -> list[tuple[str, dict]]:
+    """读出包内全部 case.json 的 (case_id, payload)；只依赖标准库。"""
+    payloads: list[tuple[str, dict]] = []
+    if not SHOWCASE_CASES_DIR.is_dir():
+        return payloads
+    for case_dir in sorted(SHOWCASE_CASES_DIR.iterdir()):
+        case_json = case_dir / "case.json"
+        if not case_json.is_file():
+            continue
+        try:
+            payload = json.loads(case_json.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        case_id = payload.get("id")
+        if isinstance(case_id, str) and case_id:
+            payloads.append((case_id, payload))
+    return payloads
+
+
+def _known_showcase_ids() -> list[str]:
+    """已知案例 id（按目录序）。"""
+    return [case_id for case_id, _ in _case_payloads()]
+
+
+def _synthetic_showcase_ids() -> list[str]:
+    """已知案例里"程序合成"的那批（material.kind == synthetic）的 id。"""
+    synthetic: list[str] = []
+    for case_id, payload in _case_payloads():
+        material = payload.get("material")
+        if isinstance(material, dict) and material.get("kind") == "synthetic":
+            synthetic.append(case_id)
+    return synthetic
+
+
+def stage_s10_showcases(ctx: Context) -> tuple[str, list[str]]:
+    """S10 案例库：全新 venv 内 `rve showcase list` + 跑通一个程序合成案例。
+
+    为什么必须单列：案例库是"对外承诺的可复现资产"——案例配方随包分发，
+    安装后必须能列出、能跑通、能自动校验。只在仓库里能跑（没装包）不算数，
+    故这里跑在 S2 建好的**全新 venv**（真交付形态）里。
+    """
+    if ctx.venv_py is None:
+        return FAIL, ["S2 未建立 venv，无法在真交付形态下验证案例库"]
+    detail: list[str] = []
+    problems: list[str] = []
+    s10 = ctx.tmp / "s10"
+    ws = s10 / "ws"
+    out_dir = s10 / "out"
+    ws.mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    rve_cmd = [ctx.venv_rve] if ctx.venv_rve else [ctx.venv_py, "-m", "rve.cli"]
+
+    # 1) 案例库资产数量：至少 3 个 case.json
+    case_jsons = (
+        sorted(SHOWCASE_CASES_DIR.rglob("case.json"))
+        if SHOWCASE_CASES_DIR.is_dir()
+        else []
+    )
+    detail.append(f"包内 case.json 数量: {len(case_jsons)}")
+    if len(case_jsons) < MIN_SHOWCASE_CASES:
+        problems.append(
+            f"案例库 case.json 少于 {MIN_SHOWCASE_CASES} 个（实为 {len(case_jsons)}）"
+        )
+
+    # 2) `rve showcase list`：退出码 0，且**装进 venv 的那份包**能列出全部案例
+    #    —— 命中数必须达到 MIN_SHOWCASE_CASES，否则说明配方没随包分发
+    #    （仓库里有、装好的包里没有，是"随包分发"最容易漏的一环）。
+    known_ids = _known_showcase_ids()
+    if not known_ids:
+        problems.append(f"未能从 {SHOWCASE_CASES_DIR} 解析出任何已知案例 id")
+    rc, out, err = _run(
+        rve_cmd + ["showcase", "list"],
+        cwd=REPO_ROOT,
+        env=_venv_env(ws),
+        timeout=300,
+    )
+    detail.append(f"`rve showcase list` 退出码: {rc}")
+    if rc != 0:
+        problems.append(f"`rve showcase list` 退出码 {rc}: {(out + err).strip()[-400:]}")
+    else:
+        hit = [cid for cid in known_ids if cid in out]
+        if len(hit) < MIN_SHOWCASE_CASES:
+            problems.append(
+                f"`rve showcase list` 只命中 {len(hit)} 个已知案例 id"
+                f"（至少需要 {MIN_SHOWCASE_CASES}，已知: {known_ids}）"
+                " —— 案例配方可能没有随包分发"
+            )
+        else:
+            detail.append(f"`rve showcase list` 输出命中案例 id: {hit}")
+
+    # 3) 跑一个程序合成案例：退出码 0（合成素材零版权、零外部依赖，可 CI 跑）
+    synthetic = _synthetic_showcase_ids()
+    detail.append(f"程序合成案例: {synthetic}")
+    if not synthetic:
+        problems.append("没有程序合成案例（material.kind == synthetic），无法验证 run")
+    else:
+        case_id = synthetic[0]
+        rc, out, err = _run(
+            rve_cmd + ["showcase", "run", case_id, "--workdir", str(out_dir)],
+            cwd=REPO_ROOT,
+            env=_venv_env(ws),
+            timeout=900,
+        )
+        detail.append(f"`rve showcase run {case_id}` 退出码: {rc}")
+        if rc != 0:
+            problems.append(
+                f"`rve showcase run {case_id}` 退出码 {rc}: {(out + err).strip()[-600:]}"
+            )
+        else:
+            detail.append(f"stdout 末行: {out.strip().splitlines()[-1] if out.strip() else '(无)'}")
+
+    if problems:
+        return FAIL, detail + problems
+    detail.append("案例库在真交付形态下可列出、可跑通、可自动校验")
+    return PASS, detail
+
+
 STAGES: list[tuple[str, str, StageFn]] = [
     ("S0", "预检（Python>=3.11 + 仓库布局）", stage_s0_preflight),
     ("S1", "单测套件（pytest -q，exit 0 且 0 failed/errors）", stage_s1_tests),
@@ -911,6 +1054,7 @@ STAGES: list[tuple[str, str, StageFn]] = [
     ("S7", "开源卫生（LICENSE/README/.gitignore/密钥/vendor）", stage_s7_hygiene),
     ("S8", "CLI 口径一致性（包名闸门）", stage_s8_cli_consistency),
     ("S9", "独立校验（不 import rve 的第二实现回读 FCP7 XML）", stage_s9_independent_verify),
+    ("S10", "案例库（showcase list + 跑通程序合成案例）", stage_s10_showcases),
 ]
 
 

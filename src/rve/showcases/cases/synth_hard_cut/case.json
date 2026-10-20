@@ -1,0 +1,25 @@
+{
+  "id": "synth_hard_cut",
+  "title": "合成素材：硬切",
+  "summary": "ffmpeg 现场合成两段视觉差异明显的画面（纯红 + SMPTE 彩条，均为静态画面）硬切拼接。期望 shot_count=2、唯一内部边界判定为 1 条 hard。实测依据：ffmpeg 4.3.1 + scenedetect 0.7.2 本机实跑——2 镜 / hard=1 / uncertain=0，边界落在 2.000s、置信度 1.00，序列时长 4.000s。（两段都取静态画面是刻意的：动态画面自身的逐帧差会让转场判据把这条硬切误判成渐变。）",
+  "material": {
+    "kind": "synthetic",
+    "license": "CC0-1.0（ffmpeg lavfi 程序生成，不含任何第三方素材）",
+    "source": "programmatic",
+    "prepare": [
+      "ffmpeg -y -v error -f lavfi -i color=c=red:s=320x240:r=30:d=2 -f lavfi -i smptebars=s=320x240:r=30:d=2 -filter_complex [0:v][1:v]concat=n=2:v=1:a=0 -pix_fmt yuv420p -c:v libx264 {{out}}"
+    ],
+    "local_hint": "",
+    "duration_sec": 4.0,
+    "fps": 30.0
+  },
+  "expected": {
+    "shot_count": 2,
+    "duration_sec": 4.0,
+    "cut_type_counts": {
+      "hard": 1
+    }
+  },
+  "tags": ["synthetic", "hard-cut", "no-network"],
+  "requires_network": false
+}

@@ -1,0 +1,29 @@
+{
+  "id": "tos_segment",
+  "title": "Tears of Steel 片段：真实素材全链路还原",
+  "summary": "外部素材案例：Tears of Steel 片段（CC-BY 3.0）。素材本身**不入库**，只存来源、许可、截取命令与期望指标；缺素材时显式报「素材缺失 + 怎么准备」，绝不静默跳过。期望值取自仓库 README 已记录的同一条截取命令（ffmpeg -ss 100 -t 60 -c copy，1920×800 @ 24fps，61.808s）下的实跑结果：10 个镜头、9 条内部边界 = 7 硬切 + 2 溶解 + 0 淡出、uncertain=1（唯一存疑项是那条只有 4 帧铺展、置信度 0.42 的溶解，显式登记而非静默猜标签）。",
+  "material": {
+    "kind": "external",
+    "license": "CC-BY 3.0",
+    "source": "https://mango.blender.org/",
+    "prepare": [
+      "从 https://mango.blender.org/ 的 Download 区下载 Tears of Steel 成片（CC-BY 3.0；官方直链目录 https://download.blender.org/demo/movies/ToS/），取 1920 宽版本（1920×800 @ 24fps）",
+      "ffmpeg -ss 100 -t 60 -c copy -i <下载的成片> tos_segment.mp4",
+      "把截取结果重命名为 tos_segment.mp4 放到工作目录"
+    ],
+    "local_hint": "放到工作目录下的 tos_segment.mp4（本案例默认 <workdir>/tos_segment.mp4），或用 --material <本地文件路径> 指定任意已截取好的片段。",
+    "duration_sec": 61.808,
+    "fps": 24.0
+  },
+  "expected": {
+    "shot_count": 10,
+    "duration_sec": 61.808,
+    "cut_type_counts": {
+      "hard": 7,
+      "dissolve": 2
+    },
+    "uncertain_count": 1
+  },
+  "tags": ["external", "real-material", "cc-by-3.0", "needs-download"],
+  "requires_network": true
+}

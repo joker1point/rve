@@ -14,7 +14,7 @@
 
 **[调研分析报告](docs/RVE-逆向剪辑调研分析报告.md) · [贡献指南](CONTRIBUTING.md) · [交付验收](scripts/acceptance.py)**
 
-[快速开始](#快速开始) · [工作原理](#工作原理) · [能还原什么](#能还原什么能力矩阵) · [Showcases](#showcases) · [FAQ](#faq) · [文档](#文档)
+[快速开始](#快速开始) · [工作原理](#工作原理) · [能还原什么](#能还原什么能力矩阵) · [Showcases](#showcases) · [案例库](#案例库showcase-library) · [FAQ](#faq) · [文档](#文档)
 
 <code>git clone https://github.com/joker1point/rve.git &amp;&amp; cd rve &amp;&amp; python -m pip install -e ".[dev]"</code>
 
@@ -161,12 +161,17 @@ RVE **没有**自更新机制（没有 `update` 子命令，也没有 npm/npx �
 
 你的 Agent 通过 MCP 调用 RVE，RVE 在本地探测素材、切分镜头、组装 `EditSpec` 并导出时间线；结论附带证据与限制。CLI 命令走的是同一套流水线。
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/rve-how-it-works.dark.svg">
+  <img alt="RVE 工作原理图：成片视频 → 探测+切镜 → EditSpec（唯一权威结构）→ 转场判定 → 导出器 → NLE 时间线；下方五条贯穿结构：案例库、适配器、会话路由、工作区、独立校验" src="docs/assets/rve-how-it-works.svg" width="720" height="590">
+</picture>
+
 RVE 照 REA 的分层组织，三层各司其职：
 
 | 层 | 职责 | 代码位置 |
 |---|---|---|
 | **工作区 / 证据目录** | 每个 spec 一个目录，内 `spec.json` 与 `receipts/`；根目录由 `RVE_WORKSPACES` 指定 | `src/rve/workspace.py` |
-| **会话路由** | 把「探测 → 切镜 → 组装 → 导出」暴露成 8 个 MCP 工具与 5 个 CLI 子命令 | `src/rve/mcp/server.py`、`src/rve/cli.py` |
+| **会话路由** | 把「探测 → 切镜 → 组装 → 导出」暴露成 10 个 MCP 工具与 6 个 CLI 子命令 | `src/rve/mcp/server.py`、`src/rve/cli.py` |
 | **Provider 注册表** | 可替换后端：探针（`FfprobeProvider`）与切镜（`PySceneDetectShotDetector`），以 `Protocol` 声明契约 | `src/rve/providers/` |
 
 **不 vendor 任何上游源码**：RVE **不包含**、也不复制 FFmpeg、PySceneDetect、OpenTimelineIO 的任何源码。上游工具一律以**薄适配器**封装：
@@ -191,7 +196,8 @@ RVE 需要 Python 3.11/3.12/3.13，外加 ffmpeg（含 ffprobe）。能做什么
 | CMX3600 EDL | 每镜一条 V 轨事件，录机端时间码在序列轴上累积 | 纯标准库；`export --format edl`；转场以 `C`/`D`+帧数表达，变速/滤镜/字幕不承载 |
 | OpenTimelineIO | `.otio` 中间层时间线（每个 clip 挂 `ExternalReference` 回源素材） | 运行期依赖 `opentimelineio`（见 `pyproject.toml`）；导出器延迟导入，缺包时 exit 2 |
 | 人类可读复核报告 | 自包含单文件 HTML（源素材 / 节奏统计 / 镜头表 / 转场 / 存疑告警） | `rve report <spec_id>`，固定写 `cwd/reports/` |
-| Agent 编排 | 8 个 MCP 工具 + `editspec://{spec_id}` 资源模板 | 本地 stdio MCP server |
+| 案例库 | 案例配方清单 + 逐项校验结果（期望 vs 实测） | `rve showcase list/run`；MCP `list_showcases`/`run_showcase` |
+| Agent 编排 | 10 个 MCP 工具 + `editspec://{spec_id}` 资源模板 | 本地 stdio MCP server |
 | 逐镜音频 / 画面描述 | **未实现**（Phase 2）：`analyze_audio` / `describe_shots` 工具名存在，但调用即 `NotImplementedError` | 见 [诚实的局限](#诚实的局限phase-0) |
 
 > 说明：`analyze_audio` 与 `describe_shots` 两个工具**未落地**，工具名存在不代表能力可用；未实现的能力一律显式报错，绝不 quietly succeed。注意区分**导出侧**与**分析侧**：FCP7 导出已输出带真实 `<file>` 的逐镜音频轨（见 Showcases），而"逐镜音频分析/画面描述"工具本身仍未实现。
@@ -227,20 +233,48 @@ rve export <spec_id> --format edl
 rve export <spec_id> --format otio
 ```
 
-### 交付闸门：11/11 PASS
+### 交付闸门：12/12 PASS
 
-`python scripts/acceptance.py` 是交付验收入口，逐阶段打印 PASS/FAIL，末行输出 `RESULT: PASS|FAIL`，全过才 exit 0。十一个阶段：S0 预检 / S1 宿主单测 / S2 构建 wheel + 全新 venv 安装 + `rve --help`/`doctor` / **S2b 全新 venv 内单测** / S3 密闭端到端 `analyze` / S4 FCP7 XML 契约断言 / S5 EDL+OTIO+往返 / S6 MCP 面 / S7 开源卫生 / S8 包名闸门 / **S9 独立校验（不 import `rve` 的第二实现回读 FCP7 XML）**。
+`python scripts/acceptance.py` 是交付验收入口，逐阶段打印 PASS/FAIL，末行输出 `RESULT: PASS|FAIL`，全过才 exit 0。十二个阶段：S0 预检 / S1 宿主单测 / S2 构建 wheel + 全新 venv 安装 + `rve --help`/`doctor` / **S2b 全新 venv 内单测** / S3 密闭端到端 `analyze` / S4 FCP7 XML 契约断言 / S5 EDL+OTIO+往返 / S6 MCP 面 / S7 开源卫生 / S8 包名闸门 / **S9 独立校验（不 import `rve` 的第二实现回读 FCP7 XML）** / **S10 案例库（全新 venv 内 `rve showcase list` + 跑通程序合成案例）**。
 
 最近一次本机实跑：
 
 ```text
-通过 11 / 失败 0 / 跳过 0
+通过 12 / 失败 0 / 跳过 0
 RESULT: PASS
 ```
 
-其中 S1 宿主单测 `passed=91 skipped=4 failed=0 errors=0`（4 条 skip 均为宿主未装 `opentimelineio` 时按约定跳过的 OTIO 用例），S2b 全新 venv 内单测 `passed=95 skipped=0 failed=0 errors=0`（全新环境依赖齐备，OTIO 用例全部执行），S9 独立校验器退出码 `0`、裁决 `PASS`。
+其中 S1 宿主单测与 S2b 全新 venv 内单测均为 `passed=117 skipped=0 failed=0 errors=0`（宿主与全新环境依赖齐备，OTIO 用例全部执行；宿主若未装 `opentimelineio`，那几条 OTIO 用例按约定 skip 而非报错），S9 独立校验器退出码 `0`、裁决 `PASS`，S10 在全新 venv 内 `rve showcase list` 命中全部 4 个案例 id 并跑通程序合成案例。
 
 > **S9 为什么必须单列**：S4 的 FCP7 契约断言由**写 XML 的同一份代码**执行，属**自证**——导出器与断言共享同一个错误假设时，闸门照绿。S9 换用一个不 import `rve.*` 的第二实现（`scripts/independent_verify.py`），从第一性原理重建时间轴再比对，专挡这类系统性盲区。详见[独立验证](#独立验证回应自证式验证)。
+
+---
+
+## 案例库（Showcase Library）
+
+案例库把「跑出来是什么样」固化成**可复现、可校验的配方**。每个案例是一份 `case.json`（随包分发），写清素材从哪来、怎么准备、期望指标是什么；`rve showcase run <id>` 会真的跑一遍主链路，把实测值与期望值**逐项比对**——对不上就是失败，不静默放过。
+
+```bash
+rve showcase list                                          # 列出全部案例
+rve showcase run synth_hard_cut                            # 跑一个程序合成案例（零版权，CI 可跑）
+rve showcase run tos_segment --material /path/to/tos.mp4    # 外部素材需自行准备
+```
+
+| 案例 | 素材 | 许可 | 期望（实测口径） |
+|---|---|---|---|
+| `synth_hard_cut` | ffmpeg 现场合成（纯红 + SMPTE 彩条硬切） | CC0-1.0 | 2 镜 / 1 硬切 / 4.000s |
+| `synth_dissolve` | ffmpeg 现场合成（`xfade` 溶解） | CC0-1.0 | 2 镜 / 1 溶解 / 3.500s |
+| `synth_fade` | ffmpeg 现场合成（`fade` 淡出到黑） | CC0-1.0 | 2 镜 / 1 淡出 / 5.000s |
+| `tos_segment` | Tears of Steel 片段（**素材不入库**，需自行下载） | CC-BY 3.0 | 10 镜 / 7 硬切 + 2 溶解 / 61.808s / `uncertain=1` |
+
+期望值全部来自本机实跑（ffmpeg 4.3.1 + scenedetect 0.7.2），不是估计值；`tos_segment` 一行取自上面 Showcases 段记录的同一条截取命令的实跑结果。
+
+两条刻意的设计：
+
+- **合成素材的配方就是可直接执行的 ffmpeg 命令行**（`{{out}}` 为输出占位符），因此三个合成案例不依赖任何第三方素材文件，CI 随时可跑；
+- **外部素材绝不自动联网下载**：缺素材时命令会打印「怎么准备」（来源、许可、截取命令、放置位置）并以退出码 2 结束，不静默跳过。
+
+案例通过 MCP 同样可调：`list_showcases` 列出全部，`run_showcase` 跑单个并返回逐项校验结果。
 
 ---
 
@@ -376,7 +410,7 @@ rve analyze path/to/final_cut.mp4 --out out/
 
 - [调研分析报告](docs/RVE-逆向剪辑调研分析报告.md)：为什么收敛为 C 型，以及差异化定位。
 - [贡献指南](CONTRIBUTING.md)：开发环境、跑测试、提 PR 的顺序与硬性约定。
-- [交付验收](scripts/acceptance.py)：十一阶段交付闸门，末行 `RESULT: PASS|FAIL`。
+- [交付验收](scripts/acceptance.py)：十二阶段交付闸门，末行 `RESULT: PASS|FAIL`。
 - [独立校验器](scripts/independent_verify.py) 与 [真实 NLE 产物对标发现](scripts/independent_verify_findings.md)：不 import `rve` 的第二实现，以及 9 份真实样本的结构差异清单。
 - [CI](.github/workflows/ci.yml)：ubuntu-latest，Python 3.11/3.12/3.13 矩阵。
 - [EditSpec 契约](#editspec-契约唯一权威结构) 与 [导出格式](#导出格式)：结构不变量与各格式状态。

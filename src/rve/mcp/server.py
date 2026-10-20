@@ -1,15 +1,19 @@
-"""RVE MCP 工具面 —— 对 AI Agent 暴露的 8 个能力。
+"""RVE MCP 工具面 —— 对 AI Agent 暴露的 10 个能力。
 
 设计约束：
 - 每个工具都是 async 薄封装：只做参数转发，不夹带业务逻辑。
 - `mcp` 包与 pipeline/workspace 兄弟模块全部延迟导入：本模块可被安全 import，
   即使 `mcp` 未安装、或 pipeline 尚未就位，也只是"构建/调用"时才失败。
+  例外：`rve.showcases.models` 在模块级导入（缺席时降级为 Any）——MCP 注册工具
+  时要对返回注解求值来生成 output schema，纯延迟导入会让 build_server() 直接
+  抛 PydanticUserError。
 - docstring 是给 AI Agent 读的接口说明，务必写清「做什么 / 参数 / 失败时会怎样」。
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from rve.schema.editspec import EditSpec
 from rve.schema.enums import DetectEngine, ExportFormat, VlmProvider
@@ -19,6 +23,7 @@ from rve.schema.results import (
     ExportResult,
     ShotDescriptionResult,
     ShotDetectionResult,
+    ToolReceipt,
     VideoProbeResult,
 )
 
@@ -27,6 +32,11 @@ if TYPE_CHECKING:  # 仅供类型检查，运行期不导入 mcp
         from mcp.server.mcpserver import MCPServer
     except ImportError:  # mcp 1.x
         from mcp.server.fastmcp import FastMCP as MCPServer
+
+try:  # 案例库核心层：返回注解要在注册工具时被求值，故必须在此处可见
+    from rve.showcases.models import ShowcaseListResult, ShowcaseRunResult
+except ImportError:  # pragma: no cover —— 核心层尚未落地时降级，工具面仍可构建
+    ShowcaseListResult = ShowcaseRunResult = Any
 
 
 # --------------------------------------------------------------------------- #
@@ -253,6 +263,63 @@ async def render_report(spec_id: str, report_format: str = "html") -> ExportResu
     return await _render_report(spec_id, report_format)
 
 
+async def list_showcases() -> ShowcaseListResult:
+    """列出案例库中的全部案例（可复现的工程资产清单）。
+
+    做什么:
+        读取包内随包分发的案例配方，逐条返回 id / 标题 / 摘要 / 素材要求 /
+        期望指标 / 标签。案例 = "怎么准备素材 + 期望跑出什么"的一份配方，
+        可直接用 run_showcase 跑通并自动校验。
+
+    参数:
+        无。
+
+    失败时会怎样:
+        - 单个 case.json 损坏 -> 该条被跳过（带告警），其余案例照常返回；
+          整个案例库不可读时返回空列表，绝不静默假装"没有案例"。
+        - 案例库核心层不可用 -> 抛异常，不返回空壳。
+    """
+    from rve.showcases.registry import list_cases_with_warnings
+
+    cases, warnings = list_cases_with_warnings()
+    receipt = ToolReceipt(tool="list_showcases", params={}, warnings=warnings)
+    return ShowcaseListResult(cases=cases, receipt=receipt)
+
+
+async def run_showcase(
+    case_id: str,
+    workdir: str | None = None,
+    material_path: str | None = None,
+) -> ShowcaseRunResult:
+    """跑一个案例并逐项校验其期望指标。
+
+    做什么:
+        按案例配方准备素材（程序合成用 ffmpeg 现场生成；外部素材用本地文件），
+        真跑一遍主链路（探测 -> 切镜 -> 组装 -> 导出），再把实测值与期望值
+        **逐项比对**，返回每项的"期望 vs 实测"、总体状态与产物清单。
+
+    参数:
+        case_id: 目标案例 id（先用 list_showcases 查）。
+        workdir: 运行产物目录；None=用系统临时目录下的 rve-showcases/<case_id>。
+        material_path: 本地素材文件路径。外部素材案例必须指定它（或把文件
+            放到工作目录下的 <case_id>.mp4），否则会报素材缺失并给出准备指引。
+
+    失败时会怎样:
+        - case_id 不存在 -> 抛 FileNotFoundError。
+        - 素材缺失（外部素材未准备 / 本机缺 ffmpeg）-> 返回 status="material_missing"，
+          message 里写清"怎么准备"，绝不悄悄跳过。
+        - 期望指标对不上 -> 返回 status="fail" 且 ok=False，绝不 quietly succeed。
+        - 流程执行出错 -> 返回 status="error" 并带上异常类型与原文。
+    """
+    from rve.showcases.runner import run_case
+
+    return await run_case(
+        case_id,
+        workdir=Path(workdir) if workdir else None,
+        material_override=material_path,
+    )
+
+
 # --------------------------------------------------------------------------- #
 # 服务器构建（延迟导入 mcp）
 # --------------------------------------------------------------------------- #
@@ -262,6 +329,8 @@ _WORKFLOW_HINT = (
     "推荐调用顺序：probe_video -> detect_shots -> "
     "(analyze_audio / describe_shots，Phase 0 未实现) -> build_edit_spec -> "
     "get_edit_spec -> export_timeline / render_report。"
+    "另有案例库工具：list_showcases 列出可复现案例（配方 + 期望指标），"
+    "run_showcase 跑一个案例并逐项校验期望。"
 )
 
 _TOOLS = (
@@ -273,11 +342,13 @@ _TOOLS = (
     get_edit_spec,
     export_timeline,
     render_report,
+    list_showcases,
+    run_showcase,
 )
 
 
 def build_server() -> "MCPServer":
-    """构建并返回 MCP server 实例：注册全部 8 个工具 + editspec 资源。
+    """构建并返回 MCP server 实例：注册全部 10 个工具 + editspec 资源。
 
     延迟导入说明:
         只有调用本函数时才 import `mcp`。因此"未安装 mcp"只会让构建失败，

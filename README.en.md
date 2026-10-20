@@ -14,7 +14,7 @@
 
 **[Research report](docs/RVE-逆向剪辑调研分析报告.md) · [Contributing](CONTRIBUTING.md) · [Delivery gate](scripts/acceptance.py)**
 
-[Quick start](#quick-start) · [How it works](#how-it-works) · [What you can recover](#what-you-can-recover) · [Showcases](#showcases) · [FAQ](#faq) · [Documentation](#documentation)
+[Quick start](#quick-start) · [How it works](#how-it-works) · [What you can recover](#what-you-can-recover) · [Showcases](#showcases) · [Showcase library](#showcase-library) · [FAQ](#faq) · [Documentation](#documentation)
 
 <code>git clone https://github.com/joker1point/rve.git &amp;&amp; cd rve &amp;&amp; python -m pip install -e ".[dev]"</code>
 
@@ -162,12 +162,17 @@ RVE has **no** self-update mechanism (no `update` subcommand and no npm/npx shim
 
 Your agent calls RVE over MCP; RVE analyzes the material locally, detects shots, assembles `EditSpec` and exports a timeline, with evidence and limits attached to every conclusion. CLI commands use the same pipeline.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/rve-how-it-works.dark.svg">
+  <img alt="How RVE works: finished render → probe + shot detection → EditSpec (the single source of truth) → transition classification → exporters → NLE timeline; below, five structures running through the whole chain: showcase library, thin adapters, session routing, workspace, independent verification" src="docs/assets/rve-how-it-works.svg" width="720" height="590">
+</picture>
+
 RVE mirrors REA's layered organization — three layers, each with one job:
 
 | Layer | Responsibility | Code |
 |---|---|---|
 | **Workspace / evidence** | One directory per spec, holding `spec.json` and `receipts/`; root set by `RVE_WORKSPACES` | `src/rve/workspace.py` |
-| **Session routing** | Exposes "probe → detect → build → export" as 8 MCP tools and 5 CLI subcommands | `src/rve/mcp/server.py`, `src/rve/cli.py` |
+| **Session routing** | Exposes "probe → detect → build → export" as 10 MCP tools and 6 CLI subcommands | `src/rve/mcp/server.py`, `src/rve/cli.py` |
 | **Provider registry** | Swappable backends: probe (`FfprobeProvider`) and shot detection (`PySceneDetectShotDetector`), declared by `Protocol` | `src/rve/providers/` |
 
 **No vendored upstream source**: RVE does **not** contain or copy any source from FFmpeg, PySceneDetect or OpenTimelineIO. Upstream tools are wrapped as **thin adapters**:
@@ -192,7 +197,8 @@ RVE needs Python 3.11/3.12/3.13 plus ffmpeg (including ffprobe). What it can do 
 | CMX3600 EDL | One V-track event per shot; record timecode accumulates on the sequence axis | Pure standard library; `export --format edl`; transitions as `C`/`D` + frame count; speed/filters/subtitles not carried |
 | OpenTimelineIO | `.otio` intermediate timeline (each clip carries an `ExternalReference` back to the source) | Runtime dependency `opentimelineio` (see `pyproject.toml`); the exporter imports it lazily and exits 2 if missing |
 | Human-readable review report | Self-contained single-file HTML (source / rhythm / shot table / transitions / uncertainty) | `rve report <spec_id>`, always writes to `cwd/reports/` |
-| Agent orchestration | 8 MCP tools + the `editspec://{spec_id}` resource template | Local stdio MCP server |
+| Showcase library | The case recipes plus per-check results (expected vs measured) | `rve showcase list/run`; MCP `list_showcases`/`run_showcase` |
+| Agent orchestration | 10 MCP tools + the `editspec://{spec_id}` resource template | Local stdio MCP server |
 | Per-shot audio / visual description | **Not implemented** (Phase 2): `analyze_audio` / `describe_shots` exist as tool names but raise `NotImplementedError` when called | See [Honest limitations](#honest-limitations-phase-0) |
 
 > Note: `analyze_audio` and `describe_shots` are **not implemented**; a tool name existing does not mean the capability works. Unimplemented capabilities always fail loudly — never quietly succeed. Note the split between **export side** and **analysis side**: the FCP7 exporter already writes a real per-shot audio track with `<file>` (see Showcases), while the per-shot audio-analysis / visual-description tools themselves are still missing.
@@ -228,20 +234,48 @@ rve export <spec_id> --format edl
 rve export <spec_id> --format otio
 ```
 
-### Delivery gate: 11/11 PASS
+### Delivery gate: 12/12 PASS
 
-`python scripts/acceptance.py` is the delivery gate. It prints PASS/FAIL per stage, ends with `RESULT: PASS|FAIL`, and only exits 0 when everything passes. Eleven stages: S0 preflight / S1 host tests / S2 build wheel + install into a fresh venv + `rve --help`/`doctor` / **S2b tests inside the fresh venv** / S3 hermetic end-to-end `analyze` / S4 FCP7 XML contract assertion / S5 EDL+OTIO+round-trip / S6 MCP surface / S7 open-source hygiene / S8 package-name gate / **S9 independent check (a second implementation that does not import `rve` reads the FCP7 XML back)**.
+`python scripts/acceptance.py` is the delivery gate. It prints PASS/FAIL per stage, ends with `RESULT: PASS|FAIL`, and only exits 0 when everything passes. Twelve stages: S0 preflight / S1 host tests / S2 build wheel + install into a fresh venv + `rve --help`/`doctor` / **S2b tests inside the fresh venv** / S3 hermetic end-to-end `analyze` / S4 FCP7 XML contract assertion / S5 EDL+OTIO+round-trip / S6 MCP surface / S7 open-source hygiene / S8 package-name gate / **S9 independent check (a second implementation that does not import `rve` reads the FCP7 XML back)** / **S10 showcase library (`rve showcase list` + one synthetic case, inside the fresh venv)**.
 
 Most recent local run:
 
 ```text
-通过 11 / 失败 0 / 跳过 0
+通过 12 / 失败 0 / 跳过 0
 RESULT: PASS
 ```
 
-where S1 host tests reported `passed=91 skipped=4 failed=0 errors=0` (all 4 skips are the OTIO cases skipped by convention when the host lacks `opentimelineio`), S2b tests inside the fresh venv reported `passed=95 skipped=0 failed=0 errors=0` (the fresh environment has every dependency, so the OTIO cases all run), and S9's independent verifier exited `0` with verdict `PASS`.
+where both the S1 host tests and the S2b tests inside the fresh venv reported `passed=117 skipped=0 failed=0 errors=0` (every dependency is present, so the OTIO cases all run; on a host without `opentimelineio` those cases are skipped by convention rather than failing), S9's independent verifier exited `0` with verdict `PASS`, and S10 listed all 4 case ids and ran a synthetic case inside the fresh venv.
 
 > **Why S9 deserves its own stage**: S4's FCP7 contract assertions are executed by **the very same code that writes the XML** — that is self-verification, so the gate stays green even if the exporter and the assertions share the same wrong assumption. S9 swaps in a second implementation (`scripts/independent_verify.py`) that does not import `rve.*`, rebuilds the timeline from first principles, and compares — blocking exactly this class of systemic blind spot. See [Independent verification](#independent-verification).
+
+---
+
+## Showcase library
+
+The showcase library turns "what it produces" into **reproducible, checkable recipes**. Every case is a `case.json` (shipped inside the package) stating where the material comes from, how to prepare it, and what the expected numbers are; `rve showcase run <id>` actually walks the main pipeline and compares every measured value against the expectation — a mismatch is a failure, never a silent pass.
+
+```bash
+rve showcase list                                          # list every case
+rve showcase run synth_hard_cut                            # run a synthesized case (CC0, CI-friendly)
+rve showcase run tos_segment --material /path/to/tos.mp4    # external material must be supplied by you
+```
+
+| Case | Material | License | Expected (measured) |
+|---|---|---|---|
+| `synth_hard_cut` | Synthesized by ffmpeg (solid red + SMPTE bars, hard cut) | CC0-1.0 | 2 shots / 1 hard cut / 4.000s |
+| `synth_dissolve` | Synthesized by ffmpeg (`xfade` dissolve) | CC0-1.0 | 2 shots / 1 dissolve / 3.500s |
+| `synth_fade` | Synthesized by ffmpeg (`fade` to black) | CC0-1.0 | 2 shots / 1 fade / 5.000s |
+| `tos_segment` | Tears of Steel segment (**not vendored** — download it yourself) | CC-BY 3.0 | 10 shots / 7 hard + 2 dissolves / 61.808s / `uncertain=1` |
+
+Every expectation comes from a real local run (ffmpeg 4.3.1 + scenedetect 0.7.2), not from estimation; the `tos_segment` row repeats the result of the very same clipping command recorded in the Showcases section above.
+
+Two deliberate design choices:
+
+- **A synthetic case's recipe is a directly executable ffmpeg command line** (`{{out}}` is the output placeholder), so the three synthetic cases depend on no third-party media file and can run in CI at any time;
+- **External material is never downloaded automatically**: when it is missing, the command prints *how to prepare it* (source, license, clipping command, where to put it) and exits with code 2 instead of skipping silently.
+
+The same cases are reachable over MCP: `list_showcases` lists them all, `run_showcase` runs one and returns the per-check results.
 
 ---
 
@@ -377,7 +411,7 @@ Start inside the repository:
 
 - [Research report](docs/RVE-逆向剪辑调研分析报告.md): why the project converged on type C and how it is positioned (Chinese).
 - [Contributing](CONTRIBUTING.md): development setup, tests, PR order and hard rules (Chinese).
-- [Delivery gate](scripts/acceptance.py): the eleven-stage gate, ending with `RESULT: PASS|FAIL`.
+- [Delivery gate](scripts/acceptance.py): the twelve-stage gate, ending with `RESULT: PASS|FAIL`.
 - [Independent verifier](scripts/independent_verify.py) and [real-NLE benchmark findings](scripts/independent_verify_findings.md): a second implementation that does not import `rve`, plus the structural-difference list over 9 real samples.
 - [CI](.github/workflows/ci.yml): ubuntu-latest, Python 3.11/3.12/3.13 matrix.
 - [EditSpec contract](#editspec-contract-single-source-of-truth) and [Export formats](#export-formats): structural invariants and per-format status.

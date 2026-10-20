@@ -1,0 +1,25 @@
+{
+  "id": "synth_dissolve",
+  "title": "合成素材：溶解",
+  "summary": "用 ffmpeg 的 xfade 滤镜（transition=fade）在纯红与纯蓝两段之间做 0.5s 溶解。期望 shot_count=2、唯一内部边界判定为 1 条 dissolve。实测依据：ffmpeg 4.3.1 + scenedetect 0.7.2 本机实跑——2 镜 / dissolve=1 / uncertain=0，边界落在 1.533s、置信度 1.00，转场时长实测 0.500s，序列时长 3.500s。（两端同为高亮度饱和色，亮度不塌陷，故被判为 dissolve 而非 fade。）",
+  "material": {
+    "kind": "synthetic",
+    "license": "CC0-1.0（ffmpeg lavfi 程序生成，不含任何第三方素材）",
+    "source": "programmatic",
+    "prepare": [
+      "ffmpeg -y -v error -f lavfi -i color=c=red:s=320x240:r=30:d=2 -f lavfi -i color=c=blue:s=320x240:r=30:d=2 -filter_complex [0:v][1:v]xfade=transition=fade:duration=0.5:offset=1.5 -pix_fmt yuv420p -c:v libx264 {{out}}"
+    ],
+    "local_hint": "",
+    "duration_sec": 3.5,
+    "fps": 30.0
+  },
+  "expected": {
+    "shot_count": 2,
+    "duration_sec": 3.5,
+    "cut_type_counts": {
+      "dissolve": 1
+    }
+  },
+  "tags": ["synthetic", "dissolve", "xfade", "no-network"],
+  "requires_network": false
+}

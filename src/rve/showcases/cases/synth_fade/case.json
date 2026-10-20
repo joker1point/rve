@@ -1,0 +1,25 @@
+{
+  "id": "synth_fade",
+  "title": "合成素材：淡出到黑",
+  "summary": "用 ffmpeg 的 fade 滤镜做淡出到黑（testsrc2 动态画面，st=2 起淡出、时长 1s，其后留 2s 黑场）。期望 shot_count=2、唯一内部边界判定为 1 条 fade。实测依据：ffmpeg 4.3.1 + scenedetect 0.7.2 本机实跑——2 镜 / fade=1 / uncertain=0，边界落在 3.000s（淡出结束处）、置信度 1.00，转场时长实测 0.967s，序列时长 5.000s。（淡出后必须留够长的黑场：转场判据只在边界附近 ±1s 的窗口内取样，窗口覆盖不到整段亮度塌陷时，这条淡出会被判成 dissolve 而不是 fade。）",
+  "material": {
+    "kind": "synthetic",
+    "license": "CC0-1.0（ffmpeg lavfi 程序生成，不含任何第三方素材）",
+    "source": "programmatic",
+    "prepare": [
+      "ffmpeg -y -v error -f lavfi -i testsrc2=s=320x240:r=30:d=5 -vf fade=t=out:st=2:d=1 -pix_fmt yuv420p -c:v libx264 {{out}}"
+    ],
+    "local_hint": "",
+    "duration_sec": 5.0,
+    "fps": 30.0
+  },
+  "expected": {
+    "shot_count": 2,
+    "duration_sec": 5.0,
+    "cut_type_counts": {
+      "fade": 1
+    }
+  },
+  "tags": ["synthetic", "fade", "fade-to-black", "no-network"],
+  "requires_network": false
+}
