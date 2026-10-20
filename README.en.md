@@ -339,7 +339,19 @@ No. RVE analyzes locally; only your agent receives the tool results, and your mo
 <details>
 <summary><strong>Can the exported timeline be imported into Premiere / Resolve directly?</strong></summary>
 
-FCP7 XML is the primary output and satisfies the `xmeml` contract (the delivery gate's S4 passes fully), but a **real import into Premiere / Resolve has not yet been performed** — the only unclosed acceptance item today. EDL carries no speed, filters or subtitles (transitions appear as `D` + frame count) and is only a minimal-path check; OTIO is an intermediate layer.
+FCP7 XML is the primary output and satisfies the `xmeml` contract (the delivery gate's S4 passes fully), but a **real import into Premiere / Resolve has not yet been performed** — the only unclosed acceptance item today: RVE can produce a structurally correct XML locally and read it back with a **second implementation that does not import `rve.*`**, but whether an editor actually accepts it can only be confirmed by a human opening the app. EDL carries no speed, filters or subtitles (transitions appear as `D` + frame count) and is only a minimal-path check; OTIO is an intermediate layer.
+
+**Verify it yourself (3 steps, ~2 minutes)**:
+
+```bash
+# 1) Generate the FCP7 XML (<spec_id>.fcp7xml.xml lands in out/)
+rve analyze path/to/final_cut.mp4 --out out/
+```
+
+2. Open `out/<spec_id>.fcp7xml.xml` in **Premiere** (File → Import) or **Resolve** (File → Import → Timeline);
+3. Check that the timeline's **shot count, total duration and transition count** match `shots` / `transition` for that spec in `rve specs`.
+
+If the import fails or disagrees with the spec, please open an issue with that XML attached — this is exactly the evidence this project most needs and most lacks.
 
 </details>
 

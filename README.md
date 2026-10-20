@@ -338,7 +338,19 @@ RVE 只对能验证的事负责。下表把「不可承诺项」说清：
 <details>
 <summary><strong>导出的时间线能直接导入 Premiere / Resolve 吗？</strong></summary>
 
-FCP7 XML 是主要出口，结构上满足 `xmeml` 契约（交付闸门 S4 全部通过），但**真人用 Premiere / Resolve 真导入实测尚未完成**——这是当前唯一未闭环的验收项。EDL 不承载变速、滤镜与字幕（转场以 `D`+帧数表达），仅作最小链路验证；OTIO 作为中间层。
+FCP7 XML 是主要出口，结构上满足 `xmeml` 契约（交付闸门 S4 全部通过），但**真人用 Premiere / Resolve 真导入实测尚未完成**——这是当前唯一未闭环的验收项：RVE 能在本地产出结构正确的 XML，并由**不 import `rve.*` 的第二实现**独立回读，但「剪辑软件是否真的接受它」只能由真人打开软件确认。EDL 不承载变速、滤镜与字幕（转场以 `D`+帧数表达），仅作最小链路验证；OTIO 作为中间层。
+
+**自己动手验证（3 步，约 2 分钟）**：
+
+```bash
+# 1) 生成 FCP7 XML（<spec_id>.fcp7xml.xml 落在 out/）
+rve analyze path/to/final_cut.mp4 --out out/
+```
+
+2. 在 **Premiere**（文件 → 导入）或 **Resolve**（文件 → 导入 → 时间线）打开 `out/<spec_id>.fcp7xml.xml`；
+3. 核对时间线的**镜头数、总时长、转场数量**是否与 `rve specs` 中该 spec 的 `shots` / `transition` 一致。
+
+导入失败或与 spec 不符时，请开 issue 并附上该 XML——这正是本项目最需要、也最缺的那份证据。
 
 </details>
 
