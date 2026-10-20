@@ -14,7 +14,7 @@
 
 **[调研分析报告](docs/RVE-逆向剪辑调研分析报告.md) · [贡献指南](CONTRIBUTING.md) · [交付验收](scripts/acceptance.py)**
 
-[快速开始](#快速开始) · [工作原理](#工作原理) · [能还原什么](#能还原什么能力矩阵) · [Showcases](#showcases) · [案例库](#案例库showcase-library) · [FAQ](#faq) · [文档](#文档)
+[快速开始](#快速开始) · [工作原理](#工作原理) · [能还原什么](#能还原什么能力矩阵) · [Showcases](#showcases) · [案例库](#案例库showcase-library) · [模拟真人导入](#模拟真人导入无-nle-环境下的代理验收) · [FAQ](#faq) · [文档](#文档)
 
 <code>git clone https://github.com/joker1point/rve.git &amp;&amp; cd rve &amp;&amp; python -m pip install -e ".[dev]"</code>
 
@@ -233,18 +233,18 @@ rve export <spec_id> --format edl
 rve export <spec_id> --format otio
 ```
 
-### 交付闸门：12/12 PASS
+### 交付闸门：13/13 PASS
 
-`python scripts/acceptance.py` 是交付验收入口，逐阶段打印 PASS/FAIL，末行输出 `RESULT: PASS|FAIL`，全过才 exit 0。十二个阶段：S0 预检 / S1 宿主单测 / S2 构建 wheel + 全新 venv 安装 + `rve --help`/`doctor` / **S2b 全新 venv 内单测** / S3 密闭端到端 `analyze` / S4 FCP7 XML 契约断言 / S5 EDL+OTIO+往返 / S6 MCP 面 / S7 开源卫生 / S8 包名闸门 / **S9 独立校验（不 import `rve` 的第二实现回读 FCP7 XML）** / **S10 案例库（全新 venv 内 `rve showcase list` + 跑通程序合成案例）**。
+`python scripts/acceptance.py` 是交付验收入口，逐阶段打印 PASS/FAIL，末行输出 `RESULT: PASS|FAIL`，全过才 exit 0。十三个阶段：S0 预检 / S1 宿主单测 / S2 构建 wheel + 全新 venv 安装 + `rve --help`/`doctor` / **S2b 全新 venv 内单测** / S3 密闭端到端 `analyze` / S4 FCP7 XML 契约断言 / S5 EDL+OTIO+往返 / S6 MCP 面 / S7 开源卫生 / S8 包名闸门 / **S9 独立校验（不 import `rve` 的第二实现回读 FCP7 XML）** / **S10 案例库（全新 venv 内 `rve showcase list` + 跑通程序合成案例）** / **S11 模拟真人导入（真值素材 + 独立解析器回读比对）**。
 
 最近一次本机实跑：
 
 ```text
-通过 12 / 失败 0 / 跳过 0
+通过 13 / 失败 0 / 跳过 0
 RESULT: PASS
 ```
 
-其中 S1 宿主单测与 S2b 全新 venv 内单测均为 `passed=117 skipped=0 failed=0 errors=0`（宿主与全新环境依赖齐备，OTIO 用例全部执行；宿主若未装 `opentimelineio`，那几条 OTIO 用例按约定 skip 而非报错），S9 独立校验器退出码 `0`、裁决 `PASS`，S10 在全新 venv 内 `rve showcase list` 命中全部 4 个案例 id 并跑通程序合成案例。
+其中 S1 宿主单测与 S2b 全新 venv 内单测均为 `passed=125 skipped=0 failed=0 errors=0`（宿主与全新环境依赖齐备，OTIO 用例全部执行；宿主若未装 `opentimelineio`，那几条 OTIO 用例按约定 skip 而非报错），S9 独立校验器退出码 `0`、裁决 `PASS`，S10 在全新 venv 内 `rve showcase list` 命中全部 4 个案例 id 并跑通程序合成案例，S11 模拟真人导入 9/9 通过（时间线总长 216 帧 = 7.200s、3 处硬切全部命中、2 处转场落在设计窗口内、6 个片段素材全部在线）。
 
 > **S9 为什么必须单列**：S4 的 FCP7 契约断言由**写 XML 的同一份代码**执行，属**自证**——导出器与断言共享同一个错误假设时，闸门照绿。S9 换用一个不 import `rve.*` 的第二实现（`scripts/independent_verify.py`），从第一性原理重建时间轴再比对，专挡这类系统性盲区。详见[独立验证](#独立验证回应自证式验证)。
 
@@ -299,6 +299,44 @@ rve showcase run tos_segment --material /path/to/tos.mp4    # 外部素材需自
 1. `<clipitem><duration>` 口径——真实产物**自身就不统一**（有的写素材总时长、有的写本段长度），RVE 写"本段长度"，与其中一派一致，不能据此判定不合规；
 2. `<timecode>` 缺 `<source>` 子元素——真实产物普遍有，但多数 NLE 容忍，是否必需未实测；
 3. 音频 clipitem 缺 `<link>` 与视频互链——真实产物普遍有，是否必需未实测。
+
+---
+
+## 模拟真人导入（无 NLE 环境下的代理验收）
+
+本项目唯一**无法在仓库内闭环**的验收项，是「真人在 Premiere / Resolve 里导入 FCP7 XML，打开时间线面板，核对镜头数 / 总时长 / 转场数」——本机没有任何 NLE，CI 也是 headless。
+
+RVE 的做法是**换基准，而不是降低断言**：用 ffmpeg 造一段**真值在设计期就完全已知**的合成素材，再让一个**不 import `rve.*` 的独立解析器**站在 NLE 的位置只吃 XML 重建时间线，逐项与素材的设计真值比对。
+
+```bash
+python scripts/make_nle_ground_truth.py --out /tmp/fixture      # 造素材 + 真值
+rve analyze /tmp/fixture/nle_fixture.mp4 --out /tmp/out        # 产出 FCP7 XML
+python scripts/simulate_nle_import.py /tmp/out/*.fcp7xml.xml \
+    --expect /tmp/fixture/ground_truth.json --html /tmp/panel.html
+```
+
+素材设计（30fps，帧数精确可算）：纯红 2.0s → SMPTE 彩条 1.5s → 纯绿 1.2s → 纯蓝 1.0s → 纯黄 1.0s（**0.5s 溶解**）→ 纯黑 1.0s（**0.5s 淡出**），总长 **7.2s / 216 帧**。
+
+真值用**内容事件**表述，而不是「镜头起点」：3 处硬切点 + 2 段转场时间窗。因为渐变区算前一镜、算后一镜、还是单独成一镜，本身是**约定而非事实**——把它当断言会一碰就碎；而「硬切点必须出现在 X」「转场必须落在 X 这段时间窗里」是素材侧不容争辩的事实。
+
+模拟器逐项核对的，正是人工在时间线面板上会看的那几件事：
+
+| 核对项 | 判据 |
+|---|---|
+| 时间线总长 | 与设计总长一致（±0.05s） |
+| 片段数 | 落在「硬切数 + 1 ~ +2」区间（渐变区归属浮动） |
+| 硬切点位置 | 3 处硬切点必须全部出现在时间线边界上（±0.1s） |
+| 转场类型与时间窗 | 每个设计的转场窗内必须有一个同类型的 `transitionitem`（窗口外扩 ±0.5s） |
+| 素材链接可用 | 每个片段的 `<file>` 都指向磁盘上真实存在的文件（媒体离线是导入最常见的失败） |
+| 音轨对齐 | 音频片段数与视频片段数一致 |
+| 结构自检 | 片段首尾相接无空洞/重叠、序列时长自洽、转场严格跨骑剪切点 |
+
+本机实跑：**9/9 全部通过**——总长 216 帧 = 7.200s、3 处硬切全部命中、2 处转场均落在设计窗口内、6 个片段素材全部在线、音轨 6 对 6。`--html` 会产出一份可单独打开的**时间线面板**（视频轨 + 音轨 + 转场标记 + 核对表），用来替代「真人打开面板看一眼」那一步。
+
+> ⚠️ **这条证据链验证什么、不验证什么**
+> 它验证：**FCP7 XML 的时间线语义能被一个独立实现正确重建，且与素材的设计真值一致**。
+> 它**不**验证：Premiere / Resolve 会不会接受这个 XML、会不会自动裁剪转场两侧的片段、`effectid` 取值会不会被正确识别。
+> 真 NLE 导入仍需人工在装有 Premiere/Resolve 的机器上执行一次——步骤见 [FAQ](#faq)。
 
 ---
 
@@ -386,6 +424,8 @@ rve analyze path/to/final_cut.mp4 --out out/
 
 导入失败或与 spec 不符时，请开 issue 并附上该 XML——这正是本项目最需要、也最缺的那份证据。
 
+> **仓库内已有一个代理验收**：闸门 **S11** 会造一段真值在设计期就完全已知的合成素材，再让一个**不 import `rve.*` 的独立解析器**站在 NLE 的位置只吃 XML 重建时间线，逐项与素材真值比对（本机实跑 9/9 通过）。它验证的是「XML 的时间线语义能被独立实现正确重建」，**不能替代真人导入**——软件是否接受这个 XML，仍然只能靠上面那 3 步。详见[模拟真人导入](#模拟真人导入无-nle-环境下的代理验收)。
+
 </details>
 
 <details>
@@ -410,7 +450,7 @@ rve analyze path/to/final_cut.mp4 --out out/
 
 - [调研分析报告](docs/RVE-逆向剪辑调研分析报告.md)：为什么收敛为 C 型，以及差异化定位。
 - [贡献指南](CONTRIBUTING.md)：开发环境、跑测试、提 PR 的顺序与硬性约定。
-- [交付验收](scripts/acceptance.py)：十二阶段交付闸门，末行 `RESULT: PASS|FAIL`。
+- [交付验收](scripts/acceptance.py)：十三阶段交付闸门，末行 `RESULT: PASS|FAIL`。
 - [独立校验器](scripts/independent_verify.py) 与 [真实 NLE 产物对标发现](scripts/independent_verify_findings.md)：不 import `rve` 的第二实现，以及 9 份真实样本的结构差异清单。
 - [CI](.github/workflows/ci.yml)：ubuntu-latest，Python 3.11/3.12/3.13 矩阵。
 - [EditSpec 契约](#editspec-契约唯一权威结构) 与 [导出格式](#导出格式)：结构不变量与各格式状态。

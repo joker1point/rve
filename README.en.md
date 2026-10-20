@@ -14,7 +14,7 @@
 
 **[Research report](docs/RVE-逆向剪辑调研分析报告.md) · [Contributing](CONTRIBUTING.md) · [Delivery gate](scripts/acceptance.py)**
 
-[Quick start](#quick-start) · [How it works](#how-it-works) · [What you can recover](#what-you-can-recover) · [Showcases](#showcases) · [Showcase library](#showcase-library) · [FAQ](#faq) · [Documentation](#documentation)
+[Quick start](#quick-start) · [How it works](#how-it-works) · [What you can recover](#what-you-can-recover) · [Showcases](#showcases) · [Showcase library](#showcase-library) · [Simulated import](#simulated-human-import-proxy-acceptance-without-an-nle) · [FAQ](#faq) · [Documentation](#documentation)
 
 <code>git clone https://github.com/joker1point/rve.git &amp;&amp; cd rve &amp;&amp; python -m pip install -e ".[dev]"</code>
 
@@ -234,18 +234,18 @@ rve export <spec_id> --format edl
 rve export <spec_id> --format otio
 ```
 
-### Delivery gate: 12/12 PASS
+### Delivery gate: 13/13 PASS
 
-`python scripts/acceptance.py` is the delivery gate. It prints PASS/FAIL per stage, ends with `RESULT: PASS|FAIL`, and only exits 0 when everything passes. Twelve stages: S0 preflight / S1 host tests / S2 build wheel + install into a fresh venv + `rve --help`/`doctor` / **S2b tests inside the fresh venv** / S3 hermetic end-to-end `analyze` / S4 FCP7 XML contract assertion / S5 EDL+OTIO+round-trip / S6 MCP surface / S7 open-source hygiene / S8 package-name gate / **S9 independent check (a second implementation that does not import `rve` reads the FCP7 XML back)** / **S10 showcase library (`rve showcase list` + one synthetic case, inside the fresh venv)**.
+`python scripts/acceptance.py` is the delivery gate. It prints PASS/FAIL per stage, ends with `RESULT: PASS|FAIL`, and only exits 0 when everything passes. Thirteen stages: S0 preflight / S1 host tests / S2 build wheel + install into a fresh venv + `rve --help`/`doctor` / **S2b tests inside the fresh venv** / S3 hermetic end-to-end `analyze` / S4 FCP7 XML contract assertion / S5 EDL+OTIO+round-trip / S6 MCP surface / S7 open-source hygiene / S8 package-name gate / **S9 independent check (a second implementation that does not import `rve` reads the FCP7 XML back)** / **S10 showcase library (`rve showcase list` + one synthetic case, inside the fresh venv)** / **S11 simulated human import (ground-truth material + independent parser reads the XML back)**.
 
 Most recent local run:
 
 ```text
-通过 12 / 失败 0 / 跳过 0
+通过 13 / 失败 0 / 跳过 0
 RESULT: PASS
 ```
 
-where both the S1 host tests and the S2b tests inside the fresh venv reported `passed=117 skipped=0 failed=0 errors=0` (every dependency is present, so the OTIO cases all run; on a host without `opentimelineio` those cases are skipped by convention rather than failing), S9's independent verifier exited `0` with verdict `PASS`, and S10 listed all 4 case ids and ran a synthetic case inside the fresh venv.
+where both the S1 host tests and the S2b tests inside the fresh venv reported `passed=125 skipped=0 failed=0 errors=0` (every dependency is present, so the OTIO cases all run; on a host without `opentimelineio` those cases are skipped by convention rather than failing), S9's independent verifier exited `0` with verdict `PASS`, S10 listed all 4 case ids and ran a synthetic case inside the fresh venv, and S11's simulated import passed 9/9 (216 frames = 7.200s total, all 3 hard cuts hit, both transitions inside their designed windows, all 6 clips' media online).
 
 > **Why S9 deserves its own stage**: S4's FCP7 contract assertions are executed by **the very same code that writes the XML** — that is self-verification, so the gate stays green even if the exporter and the assertions share the same wrong assumption. S9 swaps in a second implementation (`scripts/independent_verify.py`) that does not import `rve.*`, rebuilds the timeline from first principles, and compares — blocking exactly this class of systemic blind spot. See [Independent verification](#independent-verification).
 
@@ -300,6 +300,44 @@ Results from this run:
 1. `<clipitem><duration>` semantics — real output is **internally inconsistent** (some write the total source duration, some write the segment length); RVE writes the segment length, matching one of the camps, so this cannot be used to call RVE non-compliant;
 2. `<timecode>` lacks a `<source>` child — real output usually has it, but most NLEs tolerate its absence; whether it is required is untested;
 3. audio clipitems lack the `<link>` cross-link to video — real output usually has it; whether it is required is untested.
+
+---
+
+## Simulated human import (proxy acceptance without an NLE)
+
+The one acceptance item that **cannot be closed inside this repository** is "a human imports the FCP7 XML into Premiere / Resolve, opens the timeline panel, and checks the shot count, total duration and transitions" — there is no NLE on this machine, and CI is headless.
+
+RVE's answer is to **change the baseline, not to weaken the assertions**: synthesize a clip whose truth is *fully known at design time*, then let an **independent parser that never imports `rve.*`** stand where the NLE would be, read only the XML, rebuild the timeline, and compare it item by item against the material's design truth.
+
+```bash
+python scripts/make_nle_ground_truth.py --out /tmp/fixture      # synthesize material + truth
+rve analyze /tmp/fixture/nle_fixture.mp4 --out /tmp/out        # produce the FCP7 XML
+python scripts/simulate_nle_import.py /tmp/out/*.fcp7xml.xml \
+    --expect /tmp/fixture/ground_truth.json --html /tmp/panel.html
+```
+
+Material design (30 fps, frame counts exact): solid red 2.0s → SMPTE bars 1.5s → solid green 1.2s → solid blue 1.0s → solid yellow 1.0s (**0.5s dissolve**) → solid black 1.0s (**0.5s fade out**), total **7.2s / 216 frames**.
+
+The truth is expressed as **content events**, not "shot start points": 3 hard cuts + 2 transition windows. Whether a gradient belongs to the shot before it, the shot after it, or stands alone is a **convention, not a fact** — asserting on it breaks at the slightest change; asserting that "the hard cut must appear at X" and "the transition must fall inside this window" rests on facts the material cannot dispute.
+
+What the simulator checks is exactly what a human looks at on the timeline panel:
+
+| Check | Criterion |
+|---|---|
+| Total duration | Matches the designed duration (±0.05s) |
+| Clip count | Within "hard cuts + 1 ~ + 2" (gradient attribution floats) |
+| Hard-cut positions | All 3 designed hard cuts must appear on timeline boundaries (±0.1s) |
+| Transition type and window | Each designed window must contain a `transitionitem` of the same type (window widened by ±0.5s) |
+| Media links | Every clip's `<file>` must point at a file that really exists on disk (offline media is the most common import failure) |
+| Audio alignment | Audio clip count equals video clip count |
+| Structural self-check | Clips are contiguous with no gaps/overlaps, sequence duration is self-consistent, transitions strictly straddle their cut point |
+
+Latest local run: **9/9 passed** — 216 frames = 7.200s total, all 3 hard cuts hit, both transitions inside their designed windows, all 6 clips' media online, audio 6-for-6. `--html` writes a standalone **timeline panel** (video track + audio track + transition markers + check table) that stands in for the human "open the panel and look at it" step.
+
+> ⚠️ **What this evidence chain proves, and what it does not**
+> It proves: **the timeline semantics of the FCP7 XML can be rebuilt correctly by an independent implementation, and match the material's design truth**.
+> It does **not** prove: whether Premiere / Resolve accepts the XML, whether they auto-trim clips around a transition, or whether the `effectid` values are recognized.
+> A real NLE import still has to be done once by a human on a machine with Premiere / Resolve — the steps are in the [FAQ](#faq).
 
 ---
 
@@ -387,6 +425,8 @@ rve analyze path/to/final_cut.mp4 --out out/
 
 If the import fails or disagrees with the spec, please open an issue with that XML attached — this is exactly the evidence this project most needs and most lacks.
 
+> **The repository already ships a proxy acceptance**: gate stage **S11** synthesizes material whose truth is fully known at design time, then lets an **independent parser that never imports `rve.*`** stand where the NLE would be, read only the XML, rebuild the timeline and compare it item by item against that truth (9/9 on a local run). It proves "the timeline semantics of the XML can be rebuilt correctly by an independent implementation" — it **cannot replace the human import**: whether the editor accepts the XML is still answerable only by the 3 steps above. See [Simulated human import](#simulated-human-import-proxy-acceptance-without-an-nle).
+
 </details>
 
 <details>
@@ -411,7 +451,7 @@ Start inside the repository:
 
 - [Research report](docs/RVE-逆向剪辑调研分析报告.md): why the project converged on type C and how it is positioned (Chinese).
 - [Contributing](CONTRIBUTING.md): development setup, tests, PR order and hard rules (Chinese).
-- [Delivery gate](scripts/acceptance.py): the twelve-stage gate, ending with `RESULT: PASS|FAIL`.
+- [Delivery gate](scripts/acceptance.py): the thirteen-stage gate, ending with `RESULT: PASS|FAIL`.
 - [Independent verifier](scripts/independent_verify.py) and [real-NLE benchmark findings](scripts/independent_verify_findings.md): a second implementation that does not import `rve`, plus the structural-difference list over 9 real samples.
 - [CI](.github/workflows/ci.yml): ubuntu-latest, Python 3.11/3.12/3.13 matrix.
 - [EditSpec contract](#editspec-contract-single-source-of-truth) and [Export formats](#export-formats): structural invariants and per-format status.

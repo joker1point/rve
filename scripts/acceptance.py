@@ -1042,6 +1042,91 @@ def stage_s10_showcases(ctx: Context) -> tuple[str, list[str]]:
     return PASS, detail
 
 
+def stage_s11_simulated_nle_import(ctx: Context) -> tuple[str, list[str]]:
+    """S11 模拟真人导入：造真值素材 → analyze → 导出 → 独立解析器回读并比对真值。
+
+    为什么必须单列：项目唯一未闭环的验收项是「真人在 Premiere / Resolve 里导入
+    FCP7 XML、打开时间线面板、核对镜头数 / 总时长 / 转场数」。本机没有任何 NLE，
+    CI 又是 headless，那一步在这里做不了。
+
+    替代做法是**换基准而不是换断言**：用 ffmpeg 造一段真值在设计期就完全已知的
+    合成素材（每段的帧数、每两个段落之间的转场类型与时间窗都由命令精确决定），
+    再让一个**不 import rve.* 的独立解析器**站在 NLE 的位置只吃 XML 重建时间线，
+    逐项与素材的设计真值比对。基准来自素材本身，故不构成循环论证。
+
+    ⚠️ 边界（必须说清）：它验证「XML 的时间线语义能被一个独立实现正确重建，
+    且与素材真值一致」，**不等于** Premiere / Resolve 一定接受该 XML——
+    真 NLE 导入仍需人工在装有 NLE 的机器上执行一次。
+    """
+    if ctx.venv_py is None:
+        return FAIL, ["S2 未建立 venv，无法在真交付形态下验证模拟导入"]
+    detail: list[str] = []
+    s11 = ctx.tmp / "s11"
+    fixture_dir = s11 / "fixture"
+    out_dir = s11 / "out"
+    ws = s11 / "ws"
+    for path in (fixture_dir, out_dir, ws):
+        path.mkdir(parents=True, exist_ok=True)
+
+    maker = REPO_ROOT / "scripts" / "make_nle_ground_truth.py"
+    simulator = REPO_ROOT / "scripts" / "simulate_nle_import.py"
+    for script in (maker, simulator):
+        if not script.exists():
+            return FAIL, [f"缺脚本: {script}"]
+
+    # 1) 造带设计期真值的合成素材（ffmpeg 现场合成，零版权）
+    rc, out, err = _run(
+        [sys.executable, str(maker), "--out", str(fixture_dir)],
+        cwd=REPO_ROOT,
+        timeout=600,
+    )
+    detail.append(f"造真值素材退出码: {rc}")
+    if rc != 0:
+        return FAIL, detail + [f"造真值素材失败: {(out + err).strip()[-400:]}"]
+    video = fixture_dir / "nle_fixture.mp4"
+    truth = fixture_dir / "ground_truth.json"
+    if not video.is_file() or not truth.is_file():
+        return FAIL, detail + ["未产出素材或真值文件"]
+
+    # 2) 在全新 venv 里 analyze（真交付形态）
+    rve_cmd = [ctx.venv_rve] if ctx.venv_rve else [ctx.venv_py, "-m", "rve.cli"]
+    rc, out, err = _run(
+        rve_cmd + ["analyze", str(video), "--out", str(out_dir)],
+        cwd=REPO_ROOT,
+        env=_venv_env(ws),
+        timeout=900,
+    )
+    detail.append(f"`rve analyze` 退出码: {rc}")
+    if rc != 0:
+        return FAIL, detail + [f"`rve analyze` 失败: {(out + err).strip()[-500:]}"]
+    xmls = sorted(out_dir.glob("*.fcp7xml.xml"))
+    if not xmls:
+        return FAIL, detail + [f"analyze 未产出 FCP7 XML（{out_dir}）"]
+
+    # 3) 独立解析器站在 NLE 位置回读并比对真值
+    report = s11 / "import_report.json"
+    rc, out, err = _run(
+        [
+            sys.executable,
+            str(simulator),
+            str(xmls[0]),
+            "--expect",
+            str(truth),
+            "--json",
+            str(report),
+        ],
+        cwd=REPO_ROOT,
+        timeout=600,
+    )
+    detail.append(f"模拟导入核对退出码: {rc}")
+    lines = [ln for ln in out.strip().splitlines() if ln.strip()]
+    detail += [f"  {ln}" for ln in lines[-11:]]
+    if rc != 0:
+        return FAIL, detail + ["模拟导入核对未通过（详见上方输出）"]
+    detail.append("模拟真人导入：重建出的时间线与素材设计真值一致")
+    return PASS, detail
+
+
 STAGES: list[tuple[str, str, StageFn]] = [
     ("S0", "预检（Python>=3.11 + 仓库布局）", stage_s0_preflight),
     ("S1", "单测套件（pytest -q，exit 0 且 0 failed/errors）", stage_s1_tests),
@@ -1055,6 +1140,7 @@ STAGES: list[tuple[str, str, StageFn]] = [
     ("S8", "CLI 口径一致性（包名闸门）", stage_s8_cli_consistency),
     ("S9", "独立校验（不 import rve 的第二实现回读 FCP7 XML）", stage_s9_independent_verify),
     ("S10", "案例库（showcase list + 跑通程序合成案例）", stage_s10_showcases),
+    ("S11", "模拟真人导入（真值素材 + 独立解析器回读比对）", stage_s11_simulated_nle_import),
 ]
 
 
