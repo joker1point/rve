@@ -73,31 +73,41 @@ def _rate_block(fps: float) -> ET.Element:
     return rate
 
 
-def _frames_to_timecode(frame: int, fps: float) -> str:
-    """帧号 → HH:MM:SS:FF 时间码字符串。
+def _frames_to_timecode(frame: int, fps: float, sep: str = ":") -> str:
+    """帧号 → HH:MM:SS<sep>FF 时间码字符串。
 
     FF 字段用**取整后的 timebase** 计算（与 NLE 时间码口径一致），
     而 frame 本身来自真实帧率换算（`_sec_to_frames`），二者分工不同。
+    `sep` 为秒与帧之间的分隔符：非丢帧用 `:`、NTSC 丢帧（DF）用 `;`（NLE 惯例）。
+    导出器只在序列起始帧（frame=0）处使用本函数，故对 DF 亦成立。
     """
     tb = int(round(fps))
     total_sec = frame // tb
     sec = total_sec % 60
     minute = (total_sec // 60) % 60
     hour = (total_sec // 3600) % 24
-    return f"{hour:02d}:{minute:02d}:{sec:02d}:{frame % tb:02d}"
+    return f"{hour:02d}:{minute:02d}:{sec:02d}{sep}{frame % tb:02d}"
 
 
 def _timecode_block(fps: float, frame: int = 0) -> ET.Element:
     """构造 <timecode> 块（部分 NLE 需要）。
 
     结构：<rate>（timebase/ntsc）+ <string> + <frame> + <displayformat>。
-    displayformat 固定 NDF（非丢帧）；序列起始帧恒为传入的 frame（默认 0）。
+    displayformat 按帧率选：NTSC（23.976/29.97/59.94）用 `DF`（丢帧），
+    其余整帧率用 `NDF`（非丢帧）；string 分隔符随之取 `;` / `:`。
+    序列起始帧恒为传入的 frame（默认 0）。
+
+    ⚠️ 不确定项：FCP7 实务对 23.976 存在 NDF/DF 两种口径的分歧，本实现按
+    "NTSC 一律 DF"的既定约定；真实 NLE 相容性需真人实测确认。
     """
+    drop_frame = _is_ntsc(fps)
     tc = ET.Element("timecode")
     tc.append(_rate_block(fps))
-    ET.SubElement(tc, "string").text = _frames_to_timecode(frame, fps)
+    ET.SubElement(tc, "string").text = _frames_to_timecode(
+        frame, fps, ";" if drop_frame else ":"
+    )
     ET.SubElement(tc, "frame").text = str(frame)
-    ET.SubElement(tc, "displayformat").text = "NDF"
+    ET.SubElement(tc, "displayformat").text = "DF" if drop_frame else "NDF"
     return tc
 
 
@@ -111,6 +121,18 @@ def _sample_characteristics(fps: float, width: int, height: int) -> ET.Element:
     ET.SubElement(sc, "pixelaspectratio").text = "square"
     ET.SubElement(sc, "fielddominance").text = "none"
     ET.SubElement(sc, "colordepth").text = "24"
+    return sc
+
+
+def _audio_sample_characteristics(spec: EditSpec) -> ET.Element:
+    """构造音频 <samplecharacteristics>（<file> 内 audio 媒体用）。
+
+    位深固定 16（xmeml 常见口径）；采样率取自源元数据，缺失时不写该字段。
+    """
+    sc = ET.Element("samplecharacteristics")
+    ET.SubElement(sc, "depth").text = "16"
+    if spec.source.audio_sample_rate:
+        ET.SubElement(sc, "samplerate").text = str(spec.source.audio_sample_rate)
     return sc
 
 
@@ -152,6 +174,34 @@ def _basename(path: str | Path) -> str:
 # --------------------------------------------------------------------------- #
 # 元素构造
 # --------------------------------------------------------------------------- #
+def _media_file(
+    spec: EditSpec, fps: float, *, file_id: str, media_kind: str
+) -> ET.Element:
+    """构造 <file> 块（video / audio clipitem 共用）。
+
+    NLE 解析媒体需要：<name> / <pathurl> / <rate> / <duration>，以及 <media> 内
+    对应媒体类型的 <samplecharacteristics>（视频含尺寸/像素比，音频含位深/采样率）。
+    C 型场景下源素材即整片，故 <file><duration> 等于序列总时长。
+    """
+    file_el = ET.Element("file", {"id": file_id})
+    ET.SubElement(file_el, "name").text = _basename(spec.source.path)
+    ET.SubElement(file_el, "pathurl").text = _path_to_file_url(spec.source.path)
+    file_el.append(_rate_block(fps))
+    ET.SubElement(file_el, "duration").text = str(
+        _sec_to_frames(spec.source.duration_sec, fps)
+    )
+    media = ET.SubElement(file_el, "media")
+    if media_kind == "audio":
+        audio = ET.SubElement(media, "audio")
+        audio.append(_audio_sample_characteristics(spec))
+    else:
+        video = ET.SubElement(media, "video")
+        video.append(
+            _sample_characteristics(fps, spec.source.width, spec.source.height)
+        )
+    return file_el
+
+
 def _clipitem(
     spec: EditSpec,
     index: int,
@@ -160,9 +210,9 @@ def _clipitem(
     start_f: int,
     fps: float,
     *,
-    audio: bool = False,
+    kind: str = "video",
 ) -> ET.Element:
-    """构造一个 <clipitem>。
+    """构造一个 <clipitem>（kind 为 "video" 或 "audio"）。
 
     两组时间语义必须分清（这是 xmeml 最容易搞错的地方）：
       - <start>/<end>：clipitem 在**序列时间轴**上的位置，必须**累积**。
@@ -170,10 +220,15 @@ def _clipitem(
       - <in>/<out>：素材**源**内的起止帧。C 型场景下源素材就是原片本身，
         故取 shot.in_sec / shot.out_sec 换算的帧号 —— 这是"还原原片时间线"的正确语义。
 
-    保守写法（Wave 2 需真人实测确认）：
-      - 音频 clipitem 不挂 <file>，只做骨架，保证 Premiere 不因缺 file 报错。
+    video 与 audio 都挂指向源素材的 <file>：音频挂真实 <file>（含 <pathurl>）是
+    "真实 NLE 音频轨"的必要条件，取代了此前无 <file> 的骨架写法。
     """
-    item = ET.Element("clipitem", {"id": f"clipitem-{index}"})
+    if kind == "audio":
+        item = ET.Element("clipitem", {"id": f"audio-clipitem-{index}"})
+        file_id = "audio-file-1"
+    else:
+        item = ET.Element("clipitem", {"id": f"clipitem-{index}"})
+        file_id = "file-1"
     ET.SubElement(item, "name").text = f"shot_{index}"
     dur = out_f - in_f
     ET.SubElement(item, "duration").text = str(dur)
@@ -182,24 +237,7 @@ def _clipitem(
     ET.SubElement(item, "end").text = str(start_f + dur)
     ET.SubElement(item, "in").text = str(in_f)
     ET.SubElement(item, "out").text = str(out_f)
-    if audio:
-        # 音频轨骨架：不带 <file>，仅保留时间结构
-        return item
-    # 视频 clipitem 挂一个 <file>，指向源素材
-    file_el = ET.SubElement(item, "file", {"id": "file-1"})
-    ET.SubElement(file_el, "name").text = _basename(spec.source.path)
-    ET.SubElement(file_el, "pathurl").text = _path_to_file_url(spec.source.path)
-    file_el.append(_rate_block(fps))
-    # 源媒体总时长（帧）。C 型场景下源素材即整片，故等于序列总时长。
-    ET.SubElement(file_el, "duration").text = str(
-        _sec_to_frames(spec.source.duration_sec, fps)
-    )
-    # 源媒体的尺寸/帧率：让 Premiere / Resolve 能正确解析媒体
-    file_media = ET.SubElement(file_el, "media")
-    file_video = ET.SubElement(file_media, "video")
-    file_video.append(
-        _sample_characteristics(fps, spec.source.width, spec.source.height)
-    )
+    item.append(_media_file(spec, fps, file_id=file_id, media_kind=kind))
     return item
 
 
@@ -271,7 +309,13 @@ def _fill_video_track(track: ET.Element, spec: EditSpec, fps: float) -> None:
 
 
 def _fill_audio_track(track: ET.Element, spec: EditSpec, fps: float) -> None:
-    """audio track 骨架：每个镜头补一个无 <file> 的音频 clipitem，同样按累积位置排布。"""
+    """铺一条**真实** audio track：每个镜头补一个音频 clipitem，累积排布、覆盖整条序列。
+
+    与 video track 逐镜对齐（起点/时长/源内 <in>/<out> 一致），每个音频 clipitem
+    都挂真实 <file>（含 <pathurl> 与音频 <samplecharacteristics>）——这是"真实 NLE
+    音频轨"的形态，取代了此前无 <file> 的骨架写法。音频侧不写 <transitionitem>
+    （转场属视频媒体类型）。
+    """
     offset = 0
     for shot in spec.shots:
         in_f = _sec_to_frames(shot.in_sec, fps)
@@ -279,7 +323,9 @@ def _fill_audio_track(track: ET.Element, spec: EditSpec, fps: float) -> None:
         if out_f - in_f < 1:
             out_f = in_f + 1
         dur = out_f - in_f
-        track.append(_clipitem(spec, shot.index, in_f, out_f, offset, fps, audio=True))
+        track.append(
+            _clipitem(spec, shot.index, in_f, out_f, offset, fps, kind="audio")
+        )
         offset += dur
 
 

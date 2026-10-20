@@ -186,6 +186,7 @@ RVE needs Python 3.11/3.12/3.13 plus ffmpeg (including ffprobe). What it can do 
 | --- | --- | --- |
 | Local finished render | Source info (duration / fps / resolution / codec / audio) as a `VideoSource` + receipt | Local ffprobe; check with `rve doctor` |
 | Hard-cut boundaries | Shot list (second-anchored `in_sec`/`out_sec`), initial `CutType`, dual-engine `disagreements` | PySceneDetect; `analyze --engine {auto,content,adaptive}` |
+| Transition (dissolve / fade) detection | Each internal boundary's `cut_type` (`hard`/`dissolve`/`fade`) + transition duration + checkable evidence (peak diff, window baseline, contrast ratio, luminance extremes) | Samples only a ≤1s window around the boundary and never decodes the whole file; insufficient evidence goes into `uncertain[]` — never a silent guess |
 | Single source of truth | `EditSpec` (contiguous, non-overlapping, full tiling; `extra="forbid"`; uncertainty into `uncertain[]`) | See [EditSpec contract](#editspec-contract-single-source-of-truth) |
 | FCP7 XML timeline | `<xmeml>` sequence; video-track `clipitem`s accumulate along the sequence timeline and tile fully | Pure standard library; `export --format fcp7xml` |
 | CMX3600 EDL | One V-track event per shot; record timecode accumulates on the sequence axis | Pure standard library; `export --format edl`; drops transitions/speed |
@@ -194,7 +195,7 @@ RVE needs Python 3.11/3.12/3.13 plus ffmpeg (including ffprobe). What it can do 
 | Agent orchestration | 8 MCP tools + the `editspec://{spec_id}` resource template | Local stdio MCP server |
 | Per-shot audio / visual description | **Not implemented** (Phase 2): `analyze_audio` / `describe_shots` exist as tool names but raise `NotImplementedError` when called | See [Honest limitations](#honest-limitations-phase-0) |
 
-> Note: `analyze_audio`, `describe_shots` and audio-track recovery are not in place; a tool name existing does not mean the capability works. Unimplemented capabilities always fail loudly — never quietly succeed.
+> Note: `analyze_audio` and `describe_shots` are **not implemented**; a tool name existing does not mean the capability works. Unimplemented capabilities always fail loudly — never quietly succeed. Note the split between **export side** and **analysis side**: the FCP7 exporter already writes a real per-shot audio track with `<file>` (see Showcases), while the per-shot audio-analysis / visual-description tools themselves are still missing.
 
 ---
 
@@ -208,9 +209,12 @@ Material is a real segment of Tears of Steel (`ffmpeg -ss 100 -t 60 -c copy`, 19
 
 - **10 shots** with `Σ shot duration == source duration == 61.808s` (contiguous, no gaps, no overlaps);
 - **~9.707 cuts per minute** (rhythm curve `slow_build`), shortest shot **1.474s**, no sub-0.5s fragments;
-- **`uncertain == []`** (the two engines agree; no manual review needed).
+- **Transition verdicts**: 9 internal boundaries → **7 hard / 2 dissolve / 0 fade** (each carrying evidence: peak diff, window baseline, contrast ratio);
+- **`uncertain == 1`**: the single uncertain item is `shots[9].cut_type` — that dissolve spreads over only 4 frames with confidence 0.42, **explicitly recorded instead of silently guessing a label**.
 
-The exported FCP7 XML passes every delivery-contract assertion (`<xmeml>` has a version, `duration == the last clipitem's <end>`, the video track tiles from frame 0 with no gaps, and each `clipitem`'s `<in>/<out>` agrees with its `<duration>`) — assertion result `[]`. OTIO reads back with **10** video clips, matching the EditSpec shot count, with media references linked (`missing_ref == 0`) and clip ranges summing to **61.808s == the source duration**.
+The exported FCP7 XML, read back by **`scripts/independent_verify.py` (a second implementation that does not import `rve.*`)** → **PASS**: `<xmeml>` version=4, a purely translational timeline (offset ≈ 0 frames across all 10 shots), last clipitem `end=1483` matching `sequence duration=1483`, `<timebase>=24 <ntsc>=FALSE`, **2 `transitionitem`s all strictly straddling their cut points**, an audio track with 10 clipitems, and `<timecode>` present (full output in [Independent verification](#independent-verification)).
+
+OTIO reads back with **10** video clips == the EditSpec shot count, media references intact (`missing_ref == 0`, `no_url == 0`, `target_url` pointing back to the source `tos_seg.webm`), and clip ranges summing to **61.808s == the source duration**. The OTIO audio track is still **empty** (`0` elements) — it does not come along with the FCP7 fix.
 
 Reproduce:
 
@@ -222,18 +226,44 @@ rve export <spec_id> --format edl
 rve export <spec_id> --format otio
 ```
 
-### Delivery gate: 10/10 PASS
+### Delivery gate: 11/11 PASS
 
-`python scripts/acceptance.py` is the delivery gate. It prints PASS/FAIL per stage, ends with `RESULT: PASS|FAIL`, and only exits 0 when everything passes. Ten stages: S0 preflight / S1 host tests / S2 build wheel + install into a fresh venv + `rve --help`/`doctor` / **S2b tests inside the fresh venv** / S3 hermetic end-to-end `analyze` / S4 FCP7 XML contract assertion / S5 EDL+OTIO+round-trip / S6 MCP surface / S7 open-source hygiene / S8 package-name gate.
+`python scripts/acceptance.py` is the delivery gate. It prints PASS/FAIL per stage, ends with `RESULT: PASS|FAIL`, and only exits 0 when everything passes. Eleven stages: S0 preflight / S1 host tests / S2 build wheel + install into a fresh venv + `rve --help`/`doctor` / **S2b tests inside the fresh venv** / S3 hermetic end-to-end `analyze` / S4 FCP7 XML contract assertion / S5 EDL+OTIO+round-trip / S6 MCP surface / S7 open-source hygiene / S8 package-name gate / **S9 independent check (a second implementation that does not import `rve` reads the FCP7 XML back)**.
 
 Most recent local run:
 
 ```text
-通过 10 / 失败 0 / 跳过 0
+通过 11 / 失败 0 / 跳过 0
 RESULT: PASS
 ```
 
-where S1 host tests reported `passed=61 skipped=4 failed=0 errors=0` (all 4 skips are the OTIO cases skipped by convention when the host lacks `opentimelineio`), and S2b tests inside the fresh venv reported `passed=65 skipped=0 failed=0 errors=0` (the fresh environment has every dependency, so the OTIO cases all run).
+where S1 host tests reported `passed=91 skipped=4 failed=0 errors=0` (all 4 skips are the OTIO cases skipped by convention when the host lacks `opentimelineio`), S2b tests inside the fresh venv reported `passed=95 skipped=0 failed=0 errors=0` (the fresh environment has every dependency, so the OTIO cases all run), and S9's independent verifier exited `0` with verdict `PASS`.
+
+> **Why S9 deserves its own stage**: S4's FCP7 contract assertions are executed by **the very same code that writes the XML** — that is self-verification, so the gate stays green even if the exporter and the assertions share the same wrong assumption. S9 swaps in a second implementation (`scripts/independent_verify.py`) that does not import `rve.*`, rebuilds the timeline from first principles, and compares — blocking exactly this class of systemic blind spot. See [Independent verification](#independent-verification).
+
+---
+
+## Independent verification
+
+Half of the gate's conclusions are produced by RVE itself, which limits how much they prove. RVE therefore adds two evidence chains **independent of its own implementation**:
+
+**1. A second implementation reads the output back.** `scripts/independent_verify.py` uses only the Python standard library and **never imports `rve.*`** (a constraint pinned by a source-level regex in `tests/test_independent_verify.py`). Following the public `xmeml` conventions, it rebuilds the "source frame → sequence frame" mapping from first principles and compares it shot by shot against `spec.json`: timeline continuity, frame rate, `sequence duration`, transition straddle, and the audio track. Gate stage **S9** runs exactly this — the final `RESULT` is decided jointly by two implementations that **share no assumptions**.
+
+**2. Benchmarking against real NLE output.** Nine `xmeml` files exported by real NLEs (5 Premiere, 1 FCP7/Hiero, 3 third-party goldens) are used to check whether the reader can swallow real-world shapes, and to list the structural differences between "real output" and "RVE output" item by item. The samples and conclusions live in [`scripts/independent_verify_findings.md`](scripts/independent_verify_findings.md) (samples are kept only in a local temp directory and are **not committed** — copyright risk).
+
+Results from this run:
+
+| Subject | Result |
+|---|---|
+| RVE real output (FCP7 XML exported from the Tears of Steel segment) | **PASS** — purely translational timeline, contiguous with no gaps/overlaps, `sequence duration` as expected, 2 `transitionitem`s all strictly straddling their cut points, audio track with 10 clipitems |
+| Nine real NLE samples (structural mode) | **9/9 PASS** — the reader swallows real-world shapes |
+| `tests/test_independent_verify.py` | **12 passed** (including "hand-made broken XML with a gap/overlap must fail" and "CLI exits non-zero") |
+
+**Honest boundaries.** The benchmark also surfaced 3 **undecided** differences, and their effect on **actual import behaviour** has not been human-tested, so **nothing was changed on a guess** this round — they are only recorded:
+
+1. `<clipitem><duration>` semantics — real output is **internally inconsistent** (some write the total source duration, some write the segment length); RVE writes the segment length, matching one of the camps, so this cannot be used to call RVE non-compliant;
+2. `<timecode>` lacks a `<source>` child — real output usually has it, but most NLEs tolerate its absence; whether it is required is untested;
+3. audio clipitems lack the `<link>` cross-link to video — real output usually has it; whether it is required is untested.
 
 ---
 
@@ -267,9 +297,9 @@ RVE only stands behind what it can verify. The table below spells out what it do
 | Capability | Status |
 |---|---|
 | Hard-cut boundaries | ✅ Implemented (`content`/`adaptive` dual-engine cross-check; disagreements are explicit) |
-| Transition (dissolve / fade) detection | ⚠️ The exporter writes a `<transitionitem>` skeleton, but the `effectid`/`effectcategory` values **need real-world testing**; import correctness is unverified |
-| **NLE import closure** | ⚠️ **The only unclosed acceptance item**: a real import into Premiere / Resolve **has not been tested**; "a file was produced" is not the same as passing |
-| Audio-track recovery | ⛔ Not implemented: the FCP7 audio track is just a **skeleton without `<file>`**, and the OTIO audio track is **empty** |
+| Transition (dissolve / fade) detection | ⚠️ **Detection side implemented** (`dissolve`/`fade`, sampling only a ≤1s window around the boundary, with evidence and confidence per verdict) and covered by tests; on the **export side** it writes `<transitionitem>` strictly straddling the cut point. Real material still yields boundaries with **weak evidence** (the Tears of Steel segment: 9 boundaries → 1 in `uncertain`); the `effectid`/`effectcategory` values and **import correctness still need real-world testing** |
+| **NLE import closure** | ⚠️ **The only unclosed acceptance item**: a real import into Premiere / Resolve **has not been tested**; "a file was produced" is not the same as passing. S9's independent check and the 9-sample real-NLE benchmark (see [Independent verification](#independent-verification)) verify **structure**, not an NLE's actual acceptance |
+| Audio-track recovery | ⚠️ Partial: the **FCP7 exporter now writes a real per-shot audio track with `<file>`** (Tears of Steel segment → 10 audio clipitems, appearing/disappearing with `has_audio`); but the **OTIO audio track is still empty**, the audio↔video `<link>` cross-link is not written, and per-shot audio **analysis** (`analyze_audio`) is still not implemented |
 | Speed ramps / filters / subtitles / OCR / VLM descriptions | ⛔ Not in place (Phase 2) |
 
 ---
@@ -333,7 +363,8 @@ Start inside the repository:
 
 - [Research report](docs/RVE-逆向剪辑调研分析报告.md): why the project converged on type C and how it is positioned (Chinese).
 - [Contributing](CONTRIBUTING.md): development setup, tests, PR order and hard rules (Chinese).
-- [Delivery gate](scripts/acceptance.py): the ten-stage gate, ending with `RESULT: PASS|FAIL`.
+- [Delivery gate](scripts/acceptance.py): the eleven-stage gate, ending with `RESULT: PASS|FAIL`.
+- [Independent verifier](scripts/independent_verify.py) and [real-NLE benchmark findings](scripts/independent_verify_findings.md): a second implementation that does not import `rve`, plus the structural-difference list over 9 real samples.
 - [CI](.github/workflows/ci.yml): ubuntu-latest, Python 3.11/3.12/3.13 matrix.
 - [EditSpec contract](#editspec-contract-single-source-of-truth) and [Export formats](#export-formats): structural invariants and per-format status.
 

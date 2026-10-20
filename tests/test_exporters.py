@@ -254,9 +254,11 @@ def test_audio_track_present_when_source_has_audio() -> None:
     assert len(items) == 5
     # 音频轨同样按累积位置铺排
     assert [int(ci.find("start").text) for ci in items] == [0, 69, 151, 180, 282]
-    # 音频 clipitem 为骨架，不挂 <file>
+    # 旧断言（音频 clipitem 不挂 <file>、仅骨架）已被新结构取代：
+    # 音频骨架 → 真实音频轨，每个音频 clipitem 必须挂指向源素材的真实 <file>。
     for ci in items:
-        assert ci.find("file") is None
+        file_el = ci.find("file")
+        assert file_el is not None and file_el.find("pathurl") is not None
 
 
 def test_audio_track_absent_when_no_audio() -> None:

@@ -871,6 +871,34 @@ def stage_s8_cli_consistency(ctx: Context) -> tuple[str, list[str]]:
     return PASS, detail
 
 
+def stage_s9_independent_verify(ctx: Context) -> tuple[str, list[str]]:
+    """S9 独立校验：用**不 import rve 的第二实现**回读 FCP7 XML 并与 EditSpec 比对。
+
+    为什么必须单列：S4 的 FCP7 契约断言与导出器**同源**（自证）——只要导出器与
+    断言共享同一个错误假设，闸门照样绿。S9 换用一个只依赖标准库、从第一性原理
+    重建序列时间轴的独立读取器（scripts/independent_verify.py），专挡这类系统性盲区。
+    """
+    if ctx.xml_path is None or ctx.spec_path is None:
+        return FAIL, ["S3 未产出 xml/spec，无法独立校验"]
+    script = REPO_ROOT / "scripts" / "independent_verify.py"
+    if not script.exists():
+        return FAIL, [f"缺独立校验器: {script}"]
+
+    rc, out, err = _run(
+        [sys.executable, str(script), str(ctx.xml_path), "--spec", str(ctx.spec_path), "--json"],
+        cwd=REPO_ROOT,
+        timeout=300,
+    )
+    lines = [ln for ln in out.strip().splitlines() if ln.strip()]
+    detail = [f"独立校验器退出码: {rc}"] + [f"  {ln}" for ln in lines[-4:]]
+    if err.strip():
+        detail.append(f"stderr: {err.strip()[-300:]}")
+    if rc != 0:
+        return FAIL, detail + ["独立实现回读未通过（详见上方输出）"]
+    detail.append("独立实现回读通过：时间轴重建与 EditSpec 逐镜一致")
+    return PASS, detail
+
+
 STAGES: list[tuple[str, str, StageFn]] = [
     ("S0", "预检（Python>=3.11 + 仓库布局）", stage_s0_preflight),
     ("S1", "单测套件（pytest -q，exit 0 且 0 failed/errors）", stage_s1_tests),
@@ -882,6 +910,7 @@ STAGES: list[tuple[str, str, StageFn]] = [
     ("S6", "MCP 面（工具名 + input schema）", stage_s6_mcp),
     ("S7", "开源卫生（LICENSE/README/.gitignore/密钥/vendor）", stage_s7_hygiene),
     ("S8", "CLI 口径一致性（包名闸门）", stage_s8_cli_consistency),
+    ("S9", "独立校验（不 import rve 的第二实现回读 FCP7 XML）", stage_s9_independent_verify),
 ]
 
 

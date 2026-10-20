@@ -185,6 +185,7 @@ RVE 需要 Python 3.11/3.12/3.13，外加 ffmpeg（含 ffprobe）。能做什么
 | --- | --- | --- |
 | 本地成片 | 时长/帧率/分辨率/编码/音轨的源信息（`VideoSource` + receipt） | 本机 ffprobe；`rve doctor` 自检 |
 | 硬切镜头边界 | 镜头列表（秒锚定 `in_sec`/`out_sec`）、`CutType` 初判、双引擎分歧 `disagreements` | PySceneDetect；`analyze --engine {auto,content,adaptive}` |
+| 转场（溶解 / 淡入淡出）识别 | 每条内部边界的 `cut_type`（`hard`/`dissolve`/`fade`）+ 渐变时长 + 可复核证据（峰值差、基线、信噪比、亮度极值） | 只采边界附近 ≤1s 窗口、不解码整片；证据不足进 `uncertain[]`，绝不静默猜 |
 | 唯一权威结构 | `EditSpec`（连续无重叠铺满、`extra="forbid"`、存疑进 `uncertain[]`） | 见 [EditSpec 契约](#editspec-契约唯一权威结构) |
 | FCP7 XML 时间线 | `<xmeml>` 序列，video 轨 `clipitem` 按序列时间轴累积铺满 | 纯标准库；`export --format fcp7xml` |
 | CMX3600 EDL | 每镜一条 V 轨事件，录机端时间码在序列轴上累积 | 纯标准库；`export --format edl`；会丢转场/变速 |
@@ -193,7 +194,7 @@ RVE 需要 Python 3.11/3.12/3.13，外加 ffmpeg（含 ffprobe）。能做什么
 | Agent 编排 | 8 个 MCP 工具 + `editspec://{spec_id}` 资源模板 | 本地 stdio MCP server |
 | 逐镜音频 / 画面描述 | **未实现**（Phase 2）：`analyze_audio` / `describe_shots` 工具名存在，但调用即 `NotImplementedError` | 见 [诚实的局限](#诚实的局限phase-0) |
 
-> 说明：`analyze_audio`、`describe_shots` 与音轨还原均未落地，工具名存在不代表能力可用；未实现的能力一律显式报错，绝不 quietly succeed。
+> 说明：`analyze_audio` 与 `describe_shots` 两个工具**未落地**，工具名存在不代表能力可用；未实现的能力一律显式报错，绝不 quietly succeed。注意区分**导出侧**与**分析侧**：FCP7 导出已输出带真实 `<file>` 的逐镜音频轨（见 Showcases），而"逐镜音频分析/画面描述"工具本身仍未实现。
 
 ---
 
@@ -207,9 +208,12 @@ RVE 需要 Python 3.11/3.12/3.13，外加 ffmpeg（含 ffprobe）。能做什么
 
 - **10 个镜头**，`Σ镜头时长 == 源时长 == 61.808s`（连续、无缺口、无重叠）；
 - **每分钟约 9.707 个切点**（节奏曲线 `slow_build`），最短镜头 **1.474s**，无 `< 0.5s` 碎镜；
-- **`uncertain == []`**（双引擎结论一致，无需人工复核）。
+- **转场判定**：9 条内部边界 → **7 硬切 / 2 溶解 / 0 淡出**（每条都带峰值差、窗口基线、信噪比等证据）；
+- **`uncertain == 1`**：唯一存疑项是 `shots[9].cut_type`——那条溶解只有 4 帧铺展、置信度 0.42，**显式登记而非静默猜一个标签**。
 
-导出的 FCP7 XML 经交付契约断言全部通过：`<xmeml>` 带 version、`duration == 末个 clipitem 的 <end>`、video 轨 `clipitem` 从 0 帧起连续铺满、每个 `clipitem` 的 `<in>/<out>` 与 `<duration>` 自洽（断言结果 `[]`）。OTIO 读回：视频轨 clip 数 **10**，与 EditSpec 镜头数一致，媒体引用齐全（`missing_ref == 0`），镜头区间之和 **61.808s == 源时长**。
+导出的 FCP7 XML 经 **`scripts/independent_verify.py`（不 import `rve.*` 的第二实现）** 回读 → **PASS**：`<xmeml>` version=4、时间轴为纯平移（偏移 ≈ 0 帧、跨 10 镜一致）、末个 clipitem `end=1483` 且 `sequence duration=1483` 与期望一致、`<timebase>=24 <ntsc>=FALSE`、**2 个 `transitionitem` 全部严格跨骑剪切点**、音频轨 10 个 clipitem、`<timecode>` 存在（详细输出见[独立验证](#独立验证回应自证式验证)）。
+
+OTIO 读回：视频轨 clip 数 **10** == EditSpec 镜头数，媒体引用齐全（`missing_ref == 0`、`no_url == 0`，`target_url` 回指源 `tos_seg.webm`），镜头区间之和 **61.808s == 源时长**。OTIO 的音频轨目前仍为**空轨**（`0` 个元素），不随 FCP7 一起补齐。
 
 复现命令：
 
@@ -221,18 +225,44 @@ rve export <spec_id> --format edl
 rve export <spec_id> --format otio
 ```
 
-### 交付闸门：10/10 PASS
+### 交付闸门：11/11 PASS
 
-`python scripts/acceptance.py` 是交付验收入口，逐阶段打印 PASS/FAIL，末行输出 `RESULT: PASS|FAIL`，全过才 exit 0。十阶段：S0 预检 / S1 宿主单测 / S2 构建 wheel + 全新 venv 安装 + `rve --help`/`doctor` / **S2b 全新 venv 内单测** / S3 密闭端到端 `analyze` / S4 FCP7 XML 契约断言 / S5 EDL+OTIO+往返 / S6 MCP 面 / S7 开源卫生 / S8 包名闸门。
+`python scripts/acceptance.py` 是交付验收入口，逐阶段打印 PASS/FAIL，末行输出 `RESULT: PASS|FAIL`，全过才 exit 0。十一个阶段：S0 预检 / S1 宿主单测 / S2 构建 wheel + 全新 venv 安装 + `rve --help`/`doctor` / **S2b 全新 venv 内单测** / S3 密闭端到端 `analyze` / S4 FCP7 XML 契约断言 / S5 EDL+OTIO+往返 / S6 MCP 面 / S7 开源卫生 / S8 包名闸门 / **S9 独立校验（不 import `rve` 的第二实现回读 FCP7 XML）**。
 
 最近一次本机实跑：
 
 ```text
-通过 10 / 失败 0 / 跳过 0
+通过 11 / 失败 0 / 跳过 0
 RESULT: PASS
 ```
 
-其中 S1 宿主单测 `passed=61 skipped=4 failed=0 errors=0`（4 条 skip 均为宿主未装 `opentimelineio` 时按约定跳过的 OTIO 用例），S2b 全新 venv 内单测 `passed=65 skipped=0 failed=0 errors=0`（全新环境依赖齐备，OTIO 用例全部执行）。
+其中 S1 宿主单测 `passed=91 skipped=4 failed=0 errors=0`（4 条 skip 均为宿主未装 `opentimelineio` 时按约定跳过的 OTIO 用例），S2b 全新 venv 内单测 `passed=95 skipped=0 failed=0 errors=0`（全新环境依赖齐备，OTIO 用例全部执行），S9 独立校验器退出码 `0`、裁决 `PASS`。
+
+> **S9 为什么必须单列**：S4 的 FCP7 契约断言由**写 XML 的同一份代码**执行，属**自证**——导出器与断言共享同一个错误假设时，闸门照绿。S9 换用一个不 import `rve.*` 的第二实现（`scripts/independent_verify.py`），从第一性原理重建时间轴再比对，专挡这类系统性盲区。详见[独立验证](#独立验证回应自证式验证)。
+
+---
+
+## 独立验证（回应"自证式验证"）
+
+交付闸门里有一半结论只由 RVE 自己产出，说服力有限。为此 RVE 加了两条**独立于自身实现**的证据链：
+
+**1. 第二实现回读。** `scripts/independent_verify.py` 只依赖 Python 标准库、**绝不 import `rve.*`**（该约束由 `tests/test_independent_verify.py` 用源码正则钉死），按公开 `xmeml` 约定从第一性原理重建"源帧 → 序列帧"映射，再与 `spec.json` 逐镜比对时间轴连续性、帧率、`sequence duration`、转场跨骑与音频轨。闸门 **S9** 即跑它——最终 `RESULT` 由两份**不共享假设**的实现共同决定。
+
+**2. 真实 NLE 产物对标。** 取 9 份真实 NLE 导出的 `xmeml`（Premiere 5 份 / FCP7·Hiero 1 份 / 第三方金标 3 份），检验读取器能否吃下真实形态，并逐条列出「真实产物 vs RVE 产物」的结构差异。样本与结论见 [`scripts/independent_verify_findings.md`](scripts/independent_verify_findings.md)（样本只存本机临时目录，**不入库**——版权风险）。
+
+本次实跑结果：
+
+| 对象 | 结果 |
+|---|---|
+| RVE 真实产物（Tears of Steel 片段导出的 FCP7 XML） | **PASS**——时间轴纯平移、连续无空洞/重叠、`sequence duration` 与期望一致、2 个 `transitionitem` 全部严格跨骑剪切点、音频轨 10 个 clipitem |
+| 9 份真实 NLE 样本（结构模式） | **9/9 PASS**——读取器可吃下真实形态 |
+| `tests/test_independent_verify.py` | **12 passed**（含"手工坏 XML 空洞/重叠必须失败"与"CLI 非零退出"） |
+
+**诚实边界。** 对标同时暴露 3 项**未定论**差异，且它们对**真实导入行为**的影响未经真人实测，故**本轮不凭猜修改**，只登记在案：
+
+1. `<clipitem><duration>` 口径——真实产物**自身就不统一**（有的写素材总时长、有的写本段长度），RVE 写"本段长度"，与其中一派一致，不能据此判定不合规；
+2. `<timecode>` 缺 `<source>` 子元素——真实产物普遍有，但多数 NLE 容忍，是否必需未实测；
+3. 音频 clipitem 缺 `<link>` 与视频互链——真实产物普遍有，是否必需未实测。
 
 ---
 
@@ -266,9 +296,9 @@ RVE 只对能验证的事负责。下表把「不可承诺项」说清：
 | 能力 | 现状 |
 |---|---|
 | 硬切镜头边界 | ✅ 已实现（`content`/`adaptive` 双引擎交叉验证，分歧显式写入） |
-| 转场（溶解/淡入淡出）识别 | ⚠️ 导出器已写出 `<transitionitem>` 骨架，但 `effectid`/`effectcategory` 取值**需真人实测**，导入正确性未验证 |
-| **NLE 导入闭环** | ⚠️ **唯一未闭环验收项**：Premiere / Resolve **真导入并还原时间线尚未实测**；"生成了文件"不等于通过 |
-| 音轨还原 | ⛔ 未实现：FCP7 音频轨仅为**无 `<file>` 的骨架**，OTIO 音频轨为**空轨** |
+| 转场（溶解/淡入淡出）识别 | ⚠️ **检测侧已实现**（`dissolve`/`fade`，只采边界附近 ≤1s 窗口，逐条给证据与置信度），单测覆盖；**导出侧**写 `<transitionitem>` 且严格跨骑剪切点。真实素材仍会有**证据偏弱**的边界（Tears of Steel 片段 9 条边界 → 1 条进 `uncertain`）；`effectid`/`effectcategory` 取值与**导入正确性仍需真人实测** |
+| **NLE 导入闭环** | ⚠️ **唯一未闭环验收项**：Premiere / Resolve **真导入并还原时间线尚未实测**；"生成了文件"不等于通过。已加 S9 独立校验与 9 份真实 NLE 产物对标（见[独立验证](#独立验证回应自证式验证)），但它们验的是**结构**，不是 NLE 的实际接受度 |
+| 音轨还原 | ⚠️ 部分：**FCP7 导出已输出带真实 `<file>` 的逐镜音频轨**（Tears of Steel 片段 → 10 个 audio clipitem，随 `has_audio` 出现/消失）；但 **OTIO 音频轨仍为空轨**，音频与视频的 `<link>` 互链未写，逐镜音频**分析**（`analyze_audio`）仍未实现 |
 | 变速（speed ramp）/ 滤镜 / 字幕 / OCR / VLM 描述 | ⛔ Phase 2 未落地 |
 
 ---
@@ -332,7 +362,8 @@ FCP7 XML 是主要出口，结构上满足 `xmeml` 契约（交付闸门 S4 全�
 
 - [调研分析报告](docs/RVE-逆向剪辑调研分析报告.md)：为什么收敛为 C 型，以及差异化定位。
 - [贡献指南](CONTRIBUTING.md)：开发环境、跑测试、提 PR 的顺序与硬性约定。
-- [交付验收](scripts/acceptance.py)：十阶段交付闸门，末行 `RESULT: PASS|FAIL`。
+- [交付验收](scripts/acceptance.py)：十一阶段交付闸门，末行 `RESULT: PASS|FAIL`。
+- [独立校验器](scripts/independent_verify.py) 与 [真实 NLE 产物对标发现](scripts/independent_verify_findings.md)：不 import `rve` 的第二实现，以及 9 份真实样本的结构差异清单。
 - [CI](.github/workflows/ci.yml)：ubuntu-latest，Python 3.11/3.12/3.13 矩阵。
 - [EditSpec 契约](#editspec-契约唯一权威结构) 与 [导出格式](#导出格式)：结构不变量与各格式状态。
 

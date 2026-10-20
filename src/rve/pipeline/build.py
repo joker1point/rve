@@ -12,8 +12,8 @@ import uuid
 from datetime import datetime
 
 from .. import workspace
-from ..schema.editspec import EditSpec, Provenance, Rhythm
-from ..schema.enums import CutCurve
+from ..schema.editspec import EditSpec, Provenance, Rhythm, Transition, UncertainItem
+from ..schema.enums import CutCurve, CutType
 from ..schema.results import (
     AudioAnalysisResult,
     BuildSpecResult,
@@ -22,6 +22,7 @@ from ..schema.results import (
     ToolReceipt,
     VideoProbeResult,
 )
+from .transitions import TransitionDetectionResult, detect_transitions
 
 # 末镜终点与源时长的允许对齐容差（秒）：容器时长与帧时长差在此范围内则吸附
 _TAIL_SNAP_TOL = 0.5
@@ -89,7 +90,7 @@ def _apply_descriptions(shots, descriptions: ShotDescriptionResult) -> None:
 
 
 def _snap_tail(shots, duration_sec: float) -> None:
-    """把末镜终点吸附到源时长，保证“铺满时间轴”不变量成立。
+    """把末镜终点吸附到源时长，保证"铺满时间轴"不变量成立。
 
     检测器用帧数推算时长，容器时长会略有出入；差异在容差内时以权威源时长为准。
     """
@@ -99,6 +100,73 @@ def _snap_tail(shots, duration_sec: float) -> None:
     gap = abs(last.out_sec - duration_sec)
     if 0 < gap <= _TAIL_SNAP_TOL:
         last.out_sec = duration_sec
+
+
+def _apply_transitions(
+    shots, result: TransitionDetectionResult
+) -> list[UncertainItem]:
+    """把转场判定写回 shots[i].cut_type 与 shot.transition，返回需登记的存疑项。
+
+    HARD → cut_type=hard、transition=None；DISSOLVE/FADE → 写入带时长的 Transition；
+    UNKNOWN（证据不足）→ cut_type=unknown 并显式进 uncertain[]，绝不用默认值蒙混。
+    """
+    by_index = result.by_index()
+    prev_dur: dict[int, float] = {}
+    for i, shot in enumerate(shots):
+        prev_dur[shot.index] = shots[i - 1].duration_sec if i > 0 else shot.duration_sec
+    uncertain: list[UncertainItem] = []
+
+    for shot in shots:
+        verdict = by_index.get(shot.index)
+        if verdict is None:
+            continue
+        shot.confidence.cut_type = verdict.confidence
+        if verdict.cut_type == CutType.UNKNOWN:
+            shot.cut_type = CutType.UNKNOWN
+            shot.transition = None
+            uncertain.append(
+                UncertainItem(
+                    field_path=f"shots[{shot.index}].cut_type",
+                    reason=verdict.reason or "转场类型证据不足，无法区分硬切/渐变",
+                    candidates=["hard", "dissolve", "fade"],
+                )
+            )
+            continue
+
+        shot.cut_type = verdict.cut_type
+        if verdict.cut_type in (CutType.DISSOLVE, CutType.FADE):
+            # 时长不得越界到相邻镜头之外（转场跨骑在剪切点两侧）
+            dur = min(verdict.duration_sec, shot.duration_sec, prev_dur[shot.index])
+            shot.transition = Transition(
+                type=verdict.cut_type,
+                duration_sec=max(dur, 0.0),
+                confidence=verdict.confidence,
+            )
+        else:
+            shot.transition = None
+
+        if verdict.uncertain:
+            uncertain.append(
+                UncertainItem(
+                    field_path=f"shots[{shot.index}].cut_type",
+                    reason=verdict.reason or "转场判定置信度偏低",
+                    candidates=[verdict.cut_type.value],
+                )
+            )
+    return uncertain
+
+
+def _transition_summary(result: TransitionDetectionResult) -> dict:
+    """汇总各类转场计数，供 receipt 记录。"""
+    counts = {CutType.HARD.value: 0, CutType.DISSOLVE.value: 0, CutType.FADE.value: 0,
+              CutType.UNKNOWN.value: 0}
+    for verdict in result.verdicts:
+        counts[verdict.cut_type.value] = counts.get(verdict.cut_type.value, 0) + 1
+    return {
+        "window_sec": result.receipt.params.get("window_sec") if result.receipt else None,
+        "counts": counts,
+        "uncertain": sum(1 for v in result.verdicts if v.uncertain),
+    }
 
 
 async def build_edit_spec(
@@ -119,9 +187,38 @@ async def build_edit_spec(
         _apply_descriptions(shot_list, descriptions)
     _snap_tail(shot_list, probe.source.duration_sec)
 
+    # 转场识别：对每条内部边界判定 硬切/溶解/淡入淡出，并回填 cut_type/transition
+    transition_result: TransitionDetectionResult | None = None
+    transition_items: list[UncertainItem] = []
+    if len(shot_list) > 1:
+        boundaries = [(shot.index, shot.in_sec) for shot in shot_list[1:]]
+        transition_result = await asyncio.to_thread(
+            detect_transitions,
+            probe.source.path,
+            boundaries,
+            probe.source.fps,
+            probe.source.duration_sec,
+        )
+        transition_items = _apply_transitions(shot_list, transition_result)
+
     rhythm = _compute_rhythm(shot_list, probe.source.duration_sec)
     uncertain = [item.model_copy(deep=True) for item in shots.disagreements]
+    uncertain.extend(transition_items)
     warnings = list(shots.receipt.warnings) + list(probe.receipt.warnings)
+    provenance = [
+        Provenance(
+            tool="rve.pipeline.build",
+            params={"shots_engine": shots.engine_used},
+        )
+    ]
+    if transition_result is not None:
+        warnings.extend(transition_result.warnings)
+        provenance.append(
+            Provenance(
+                tool="rve.pipeline.transitions",
+                params=_transition_summary(transition_result),
+            )
+        )
 
     # EditSpec 校验失败必须抛出，绝不 try/except 吞掉
     spec = EditSpec(
@@ -132,22 +229,20 @@ async def build_edit_spec(
         rhythm=rhythm,
         uncertain=uncertain,
         warnings=warnings,
-        provenance=[
-            Provenance(
-                tool="rve.pipeline.build",
-                params={"shots_engine": shots.engine_used},
-            )
-        ],
+        provenance=provenance,
     )
 
     path = workspace.write_spec(spec)
+    receipt_params = {
+        "spec_id": resolved_id,
+        "source": probe.source.path,
+        "shot_count": len(shot_list),
+    }
+    if transition_result is not None:
+        receipt_params["transitions"] = _transition_summary(transition_result)
     receipt = ToolReceipt(
         tool="build_edit_spec",
-        params={
-            "spec_id": resolved_id,
-            "source": probe.source.path,
-            "shot_count": len(shot_list),
-        },
+        params=receipt_params,
         ok=True,
         started_at=started,
         duration_ms=int((time.perf_counter() - t0) * 1000),
